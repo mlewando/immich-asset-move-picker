@@ -1,0 +1,8 @@
+*
+!package.json
+!package-lock.json
+!src/
+!public/
+!styles/
+# Built inside the image (Containerfile css stage), never copied from a local build.
+public/app.css

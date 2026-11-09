@@ -1,0 +1,5 @@
+node_modules/
+dev/.data/
+dev/.env.local
+.playwright-mcp/
+public/app.css

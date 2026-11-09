@@ -1,0 +1,41 @@
+{
+  "name": "immich-asset-move-picker",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Curator's web page to move photos from a member's Immich account into the family account.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/main.ts",
+    "check": "tsc --noEmit",
+    "test": "node --disable-warning=ExperimentalWarning --test 'test/**/*.test.ts'",
+    "dev:up": "docker compose -f dev/compose.yml up -d --wait",
+    "dev:seed": "node dev/seed.ts",
+    "dev:app": "node --disable-warning=ExperimentalWarning --env-file=dev/.env.local src/main.ts",
+    "dev:app:container": "docker compose -f dev/compose.yml --profile app up --build picker",
+    "dev:down": "docker compose -f dev/compose.yml --profile app down",
+    "dev:reset": "node dev/reset.ts",
+    "test:int": "node --disable-warning=ExperimentalWarning --env-file=dev/.env.local --test --test-concurrency=1 'test/integration/*.int.ts'",
+    "build:css": "tailwindcss -i styles/app.css -o public/app.css --minify",
+    "dev:css": "tailwindcss -i styles/app.css -o public/app.css --watch",
+    "pretest": "npm run build:css",
+    "prestart": "npm run build:css",
+    "predev:app": "npm run build:css"
+  },
+  "dependencies": {
+    "@fastify/static": "^10.1.10",
+    "fastify": "^5.12.8",
+    "htm": "^3.1.1",
+    "pg": "^8.23.1",
+    "preact": "^11.2.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.4",
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
+    "tailwindcss": "^4.3.4",
+    "typescript": "^7.0.2"
+  }
+}

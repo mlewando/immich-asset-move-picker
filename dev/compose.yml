@@ -1,0 +1,85 @@
+# Throwaway local Immich for development and the integration tests, the version the picker
+# supports. Based on the official v3.3.5 docker-compose.yml. Never point this at real data.
+#
+#   npm run dev:up      start Immich (http://127.0.0.1:2283), Postgres on 127.0.0.1:55432
+#   npm run dev:seed    users, API keys, test photos, picker DB role → dev/.env.local
+#   npm run dev:app     run the picker natively against it (or: npm run dev:app:container)
+#   npm run dev:down    stop; npm run dev:reset also wipes all data
+name: immich-picker-dev
+
+services:
+  immich-server:
+    image: ghcr.io/immich-app/immich-server:v3.3.5
+    environment:
+      DB_HOSTNAME: database
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      DB_DATABASE_NAME: immich
+      REDIS_HOSTNAME: redis
+      # No ML container: smart search / faces are irrelevant to the picker.
+      IMMICH_MACHINE_LEARNING_ENABLED: "false"
+    volumes:
+      # Bind mount (not a volume) so the natively-run picker and the host see the same files
+      # (hard links, path mapping). Layout = production's /data view.
+      - ./.data/immich:/data
+    ports:
+      - "127.0.0.1:2283:2283"
+    depends_on:
+      - redis
+      - database
+    healthcheck:
+      disable: false
+
+  redis:
+    image: docker.io/valkey/valkey:9@sha256:c123e3715db63d06d4ad6964884037aa0d5d4d703939b9929954112889708e1d
+    healthcheck:
+      test: redis-cli ping | grep -q PONG || exit 1
+
+  database:
+    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: immich
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      # Named volume: Postgres data on a macOS bind mount hits permission issues.
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:55432:5432"
+    shm_size: 128mb
+    healthcheck:
+      disable: false
+
+  # The picker image, configured like a real deployment except that it reaches Immich and
+  # Postgres by service name. Needs dev/.env.local (written by `npm run dev:seed`).
+  picker:
+    profiles: [app]
+    build:
+      context: ..
+      dockerfile: Containerfile
+    env_file:
+      - path: ./.env.local
+        required: false
+    environment:
+      PICKER_LISTEN: 0.0.0.0:2284
+      IMMICH_API_URL: http://immich-server:2283/api
+      PGHOST: database
+      PGPORT: "5432"
+      PICKER_LIBRARY_MOUNT: /library
+      PICKER_THUMBS_DIR: /data/thumbs
+      PICKER_METRICS_DIR: /metrics
+      PICKER_DATA_DIR: /var/lib/picker
+    volumes:
+      - ./.data/immich:/library
+      - ./.data/immich/thumbs:/data/thumbs:ro
+      - ./.data/metrics:/metrics
+      # Separate from the native run's dev/.data/picker: 2 processes must not share 1 queue.
+      - ./.data/picker-container:/var/lib/picker
+    ports:
+      - "127.0.0.1:2284:2284"
+    depends_on:
+      - immich-server
+
+volumes:
+  pgdata:

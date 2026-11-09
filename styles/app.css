@@ -1,0 +1,19 @@
+/* Tailwind input. `npm run build:css` compiles it to public/app.css (git-ignored). Only the
+   page's own code is scanned for class names. */
+@import 'tailwindcss' source(none);
+@source '../public';
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-neutral-950 text-neutral-100 antialiased;
+  }
+}
+
+/* Long timelines: let the browser skip layout and paint of off-screen days. */
+.day {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 400px;
+}
