@@ -83,6 +83,12 @@ jobs:
       IMAGE: ghcr.io/${{ github.repository }}
       DIGEST: ${{ needs.image.outputs.digest }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # all tags, to find the previous release
+      # Generated notes list only merged pull requests; commits go straight to main, so list them.
       - run: |
-          notes=$(printf '## Image\n\n```\ndocker pull %s:%s\n# digest: %s\n```\n' "$IMAGE" "${TAG#v}" "$DIGEST")
+          prev=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+          changes=$(git log --no-merges --format='- %s (%h)' ${prev:+"$prev.."}"$TAG")
+          notes=$(printf '## Changes\n\n%s\n\n## Image\n\n```\ndocker pull %s:%s\n# digest: %s\n```\n' "$changes" "$IMAGE" "${TAG#v}" "$DIGEST")
           gh release create "$TAG" --verify-tag --title "$TAG" --notes "$notes" --generate-notes
