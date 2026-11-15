@@ -1,6 +1,7 @@
 # Every push and pull request: type-check, unit tests, and an image build (not pushed).
 # A v* tag (e.g. v0.1.0): the same, then the image is pushed to
-# ghcr.io/mlewando/immich-asset-move-picker:<version>.
+# ghcr.io/mlewando/immich-asset-move-picker:<version> and a GitHub Release is created for the tag,
+# naming that image by digest.
 # Integration tests need a local Immich (npm run dev:up); they run on a developer machine.
 # Actions are pinned by commit SHA (the tag in the comment).
 name: ci
@@ -37,6 +38,8 @@ jobs:
     permissions:
       contents: read
       packages: write # push to ghcr.io (tags only)
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -54,7 +57,8 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Containerfile
@@ -64,3 +68,21 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # GitHub can't attach a container image to a Release, so the notes name it (tag and digest).
+  release:
+    needs: image
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      IMAGE: ghcr.io/${{ github.repository }}
+      DIGEST: ${{ needs.image.outputs.digest }}
+    steps:
+      - run: |
+          notes=$(printf '## Image\n\n```\ndocker pull %s:%s\n# digest: %s\n```\n' "$IMAGE" "${TAG#v}" "$DIGEST")
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes "$notes" --generate-notes

@@ -79,8 +79,11 @@ npm run dev:reset   # wipe the local Immich
 ```
 Node runs the TypeScript sources directly; the only build step is the page's CSS (Tailwind).
 
-CI type-checks, runs the unit tests and builds the image on every push and pull request. A
-release is a tag: pushing `vX.Y.Z` publishes `ghcr.io/mlewando/immich-asset-move-picker:X.Y.Z`.
+CI type-checks, runs the unit tests and builds the image on every push and pull request. To
+release, run `npm version patch` (or `minor`/`major`: it bumps `package.json`, commits and tags
+`vX.Y.Z`), then `git push origin main --follow-tags`. The tag publishes
+`ghcr.io/mlewando/immich-asset-move-picker:X.Y.Z` and creates a GitHub Release whose notes list
+the changes since the previous release and the image's digest.
 
 **Code layout:** `src/immich/` is the only code that knows Immich (its API, database schema, file
 layout and the upgrade guard) behind 1 interface, `src/immich/index.ts`. Supporting a new Immich

@@ -1,6 +1,6 @@
 {
   "name": "immich-asset-move-picker",
-  "version": "0.0.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Curator's web page to move photos from a member's Immich account into the family account.",
   "type": "module",
