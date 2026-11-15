@@ -7,6 +7,7 @@ import htm from 'htm';
 import { media } from './api.js';
 import { CheckCircle, Icon } from './icons.js';
 import { applyMarquee, groupByDay, rectsIntersect } from './selection.js';
+import { session } from './session.js';
 
 const html = htm.bind(h);
 
@@ -73,6 +74,7 @@ class Tile extends Component {
             loading="lazy"
             decoding="async"
             draggable=${false}
+            onError=${session.check}
             class=${`size-full object-cover transition-[scale,border-radius] duration-200 ease-out ${selected ? 'scale-[0.86] rounded-xl' : 'scale-100 rounded-none'}`}
           />
         </button>

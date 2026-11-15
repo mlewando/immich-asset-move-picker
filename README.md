@@ -24,7 +24,11 @@ Nothing is ever deleted that has no other copy, and every step can be resumed af
 - The Immich **library mounted read-write as 1 mount** (hard links don't work across mounts), and
   Immich's thumbnails directory (read-only is enough).
 - An **authenticating reverse proxy** in front: the app has no login of its own. It logs the
-  user from `X-Forwarded-Email` when present.
+  user from `X-Forwarded-Email` when present. Mark `^/media/` and `^/api/` as API routes so an
+  expired session answers those with `401` instead of a login redirect (oauth2-proxy:
+  `api_routes = ["^/media/", "^/api/"]`). The page then reloads once and only that top-level load
+  logs in; otherwise every open thumbnail starts its own login and the identity provider may
+  rate-limit them.
 
 ## Running
 ```sh

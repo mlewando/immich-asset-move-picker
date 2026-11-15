@@ -1,11 +1,22 @@
 // Thin wrappers over the picker's API (src/server.ts).
+import { session } from './session.js';
 
 async function request(method, url, body) {
   const headers = { accept: 'application/json' };
   // Every mutating request carries X-Picker: 1 (a cross-site form post can't set it).
   if (method !== 'GET') headers['x-picker'] = '1';
   if (body !== undefined) headers['content-type'] = 'application/json';
-  const res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const res = await fetch(url, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+    // A login redirect followed by fetch fails CORS; catch it here and reload instead.
+    redirect: 'manual',
+  });
+  if (session.isExpired(res)) {
+    session.expired();
+    throw new Error('Session expired, reloading');
+  }
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new Error(data?.error ?? `${url}: HTTP ${res.status}`);
   return data;
