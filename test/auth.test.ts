@@ -42,6 +42,13 @@ const cookieOf = (res: LightMyRequestResponse, name: string) => {
   return c;
 };
 
+/** The login cookie /oauth2/start set; its name ends with the login's state. */
+const loginCookieOf = (start: LightMyRequestResponse, prefix = '') => {
+  const c = start.cookies.find((c) => c.name.startsWith(`${prefix}picker_login_`));
+  assert.ok(c, 'no login cookie');
+  return { ...c, state: c.name.slice(`${prefix}picker_login_`.length) };
+};
+
 /**
  * The app with a fake clock, and helpers bound to it (cookie names carry the `__Host-` prefix
  * when its public URL is https):
@@ -61,11 +68,10 @@ async function makeApp(oidc: Oidc, config = baseConfig()) {
         headers: poll ? { 'x-picker-poll': '1' } : {},
       })
     ).statusCode;
-  const callback = (start: LightMyRequestResponse) =>
-    app.inject({
-      url: '/oauth2/callback?code=c&state=s',
-      cookies: { [`${prefix}picker_login`]: cookieOf(start, `${prefix}picker_login`).value },
-    });
+  const callback = (start: LightMyRequestResponse) => {
+    const c = loginCookieOf(start, prefix);
+    return app.inject({ url: `/oauth2/callback?code=c&state=${c.state}`, cookies: { [c.name]: c.value } });
+  };
   const login = async (rd = '/family') => {
     const start = await app.inject(`/oauth2/start?rd=${encodeURIComponent(rd)}`);
     assert.equal(start.statusCode, 302);
@@ -145,14 +151,27 @@ test("login: a flood of started logins does not break a curator's login in progr
   await app.close();
 });
 
+test('login: 2 tabs logging in at once both succeed, in either order', async () => {
+  const { app, callback } = await makeApp(fakeOidc().oidc);
+  const a = await app.inject('/oauth2/start?rd=/a');
+  const b = await app.inject('/oauth2/start?rd=/b');
+  assert.notEqual(loginCookieOf(a).name, loginCookieOf(b).name);
+  assert.equal((await callback(b)).headers.location, `${HOME}b`);
+  assert.equal((await callback(a)).headers.location, `${HOME}a`);
+  await app.close();
+});
+
 test('login: a forged or tampered login cookie is refused', async () => {
   const { app } = await makeApp(fakeOidc().oidc);
-  const v = cookieOf(await app.inject('/oauth2/start'), 'picker_login').value;
+  const { name, value: v, state } = loginCookieOf(await app.inject('/oauth2/start'));
   const tampered = v.replace(/"returnTo":"[^"]*"/, '"returnTo":"https://evil.test/"');
   assert.notEqual(tampered, v);
   for (const c of [tampered, 'x', '']) {
-    assert.equal((await app.inject({ url: '/oauth2/callback?code=c&state=s', cookies: { picker_login: c } })).statusCode, 400);
+    assert.equal((await app.inject({ url: `/oauth2/callback?code=c&state=${state}`, cookies: { [name]: c } })).statusCode, 400);
   }
+  // A valid cookie under another login's name (state) is refused too.
+  const other = loginCookieOf(await app.inject('/oauth2/start'));
+  assert.equal((await app.inject({ url: `/oauth2/callback?code=c&state=${other.state}`, cookies: { [other.name]: v } })).statusCode, 400);
   await app.close();
 });
 
@@ -175,7 +194,7 @@ test('cookies: __Host- names when the picker is reached over https', async () =>
   const { app, prefix, status, callback } = await makeApp(fakeOidc().oidc, baseConfig({ publicUrl: new URL('https://picker.test') }));
   assert.equal(prefix, '__Host-');
   const start = await app.inject('/oauth2/start');
-  const lc = cookieOf(start, '__Host-picker_login');
+  const lc = loginCookieOf(start, '__Host-');
   assert.ok(lc.secure && lc.path === '/');
   const cb = await callback(start);
   const sc = cookieOf(cb, '__Host-picker_session');
@@ -322,7 +341,8 @@ async function realLogin(app: FastifyInstance) {
   assert.equal(authorize.searchParams.get('redirect_uri'), `${HOME}oauth2/callback`);
   assert.match(authorize.searchParams.get('scope')!, /offline_access/);
   const back = new URL((await fetch(authorize, { redirect: 'manual' })).headers.get('location')!);
-  return app.inject({ url: back.pathname + back.search, cookies: { picker_login: cookieOf(start, 'picker_login').value } });
+  const c = loginCookieOf(start);
+  return app.inject({ url: back.pathname + back.search, cookies: { [c.name]: c.value } });
 }
 
 test('real OIDC flow: login, then a refresh re-reads the groups', async () => {

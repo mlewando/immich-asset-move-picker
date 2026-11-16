@@ -210,6 +210,9 @@ function sessionKeeper({ config, oidc, sessions, now, log }: Required<AuthDeps> 
   };
 }
 
+// openid-client's random state: base64url. Checked before it becomes part of a cookie name.
+const STATE = /^[A-Za-z0-9_-]{1,128}$/;
+
 type Login = { state: string; nonce: string; verifier: string; returnTo: string; at: number };
 
 export async function registerAuth(app: FastifyInstance, deps: AuthDeps): Promise<void> {
@@ -222,7 +225,9 @@ export async function registerAuth(app: FastifyInstance, deps: AuthDeps): Promis
   // accept the prefix only on Secure cookies, so plain http (tests, dev) keeps the bare name.
   const prefix = secure ? '__Host-' : '';
   const sessionCookie = `${prefix}picker_session`;
-  const loginCookie = `${prefix}picker_login`;
+  // 1 cookie per login in progress, named by its state: 2 tabs logging in at once (both reloaded
+  // when the session ended) must not overwrite each other's.
+  const loginCookie = (state: string) => `${prefix}picker_login_${state}`;
   const cookieOpts = { path: '/', httpOnly: true, secure, sameSite: 'lax' } as const;
 
   // A login in progress lives in its own cookie, signed with a key that never leaves this process:
@@ -272,15 +277,16 @@ export async function registerAuth(app: FastifyInstance, deps: AuthDeps): Promis
       nonce: login.nonce,
       codeChallenge: await client.calculatePKCECodeChallenge(login.verifier),
     });
-    reply.setCookie(loginCookie, JSON.stringify(login), { ...cookieOpts, signed: true, maxAge: LOGIN_TTL_MS / 1000 });
+    reply.setCookie(loginCookie(login.state), JSON.stringify(login), { ...cookieOpts, signed: true, maxAge: LOGIN_TTL_MS / 1000 });
     return reply.redirect(url.href);
   });
 
-  app.get('/oauth2/callback', { config: { public: true } }, async (req, reply) => {
-    const signed = req.cookies[loginCookie];
+  app.get<{ Querystring: { state?: string } }>('/oauth2/callback', { config: { public: true } }, async (req, reply) => {
+    const state = req.query.state ?? '';
+    const signed = STATE.test(state) ? req.cookies[loginCookie(state)] : undefined;
     const login = signed ? openLogin(signed) : null;
-    reply.clearCookie(loginCookie, cookieOpts);
-    if (!login || now() - login.at > LOGIN_TTL_MS) return errorPage(reply, 400, 'The login took too long or was started elsewhere.');
+    if (signed) reply.clearCookie(loginCookie(state), cookieOpts);
+    if (!login || login.state !== state || now() - login.at > LOGIN_TTL_MS) return errorPage(reply, 400, 'The login took too long or was started elsewhere.');
 
     let grant: Grant;
     try {
