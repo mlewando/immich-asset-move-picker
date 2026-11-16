@@ -210,8 +210,10 @@ function useGrid(route) {
   const [error, setError] = useState(null);
   const [selected, setSelected] = useState(() => new Set());
   const anchor = useRef(null); // flat index of the last single select (shift-click range start)
+  // opts.poll: a reload the jobs poll started is not the user's doing (it must not keep an
+  // unused tab's session alive); the user's own actions ping on their own (expiry.js).
   const load = useCallback(
-    () => (route.kind === 'family' ? api.familyAssets() : api.memberAssets(route.id, route.filter)),
+    (opts) => (route.kind === 'family' ? api.familyAssets(opts) : api.memberAssets(route.id, route.filter, opts)),
     [gridKey],
   );
 
@@ -226,7 +228,7 @@ function useGrid(route) {
 
   const reload = useCallback(() => {
     if (!gridKey) return;
-    load().then((next) => {
+    load({ poll: true }).then((next) => {
       setItems(next);
       const ids = new Set(next.map((i) => i.id));
       setSelected((s) => new Set([...s].filter((id) => ids.has(id))));

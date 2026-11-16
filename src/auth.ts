@@ -62,6 +62,8 @@ export const MAX_SESSION_MS = 12 * 3_600_000;
 // lastSeen is written at most this often (a grid fires hundreds of requests a second).
 const TOUCH_MS = 15_000;
 const LOGIN_TTL_MS = 10 * 60_000;
+// Logins in progress kept per browser (a few tabs at once).
+const MAX_PENDING_LOGINS = 5;
 const SCOPE = 'openid profile email groups offline_access';
 
 /** openid-client against the real provider. Discovery runs on first use and again after a failure. */
@@ -147,10 +149,11 @@ declare module 'fastify' {
 /** GET and HEAD change nothing; every other method is a write (and needs X-Picker, server.ts). */
 export const isSafeMethod = (method: string) => method === 'GET' || method === 'HEAD';
 
-// An OAuth error with a 5xx (server_error, temporarily_unavailable) means "try later", not no.
+// An OAuth error with a 5xx (server_error, temporarily_unavailable) or 429 (throttled) means
+// "try later", not no.
 const refused = (err: unknown) =>
   err instanceof ProviderRefused ||
-  (err instanceof client.ResponseBodyError && err.status < 500) ||
+  (err instanceof client.ResponseBodyError && err.status < 500 && err.status !== 429) ||
   err instanceof client.AuthorizationResponseError ||
   err instanceof client.WWWAuthenticateChallengeError;
 
@@ -300,6 +303,13 @@ export async function registerAuth(app: FastifyInstance, deps: AuthDeps): Promis
       nonce: login.nonce,
       codeChallenge: await client.calculatePKCECodeChallenge(login.verifier),
     });
+    // Logins started and abandoned (reloads, tabs) leave cookies for LOGIN_TTL_MS; enough of them
+    // would push this browser's request headers past the server's limit. Keep the newest few.
+    const pending = Object.keys(req.cookies)
+      .filter((name) => name.startsWith(loginCookie('')))
+      .map((name) => ({ name, at: openLogin(req.cookies[name]!)?.at ?? 0 }))
+      .sort((a, b) => b.at - a.at);
+    for (const { name } of pending.slice(MAX_PENDING_LOGINS - 1)) reply.clearCookie(name, cookieOpts);
     reply.setCookie(loginCookie(login.state), JSON.stringify(login), { ...cookieOpts, signed: true, maxAge: LOGIN_TTL_MS / 1000 });
     return reply.redirect(url.href);
   });

@@ -14,7 +14,7 @@ export type Config = {
   // The picker's own state: the job queue and the login sessions (SQLite). Not backed up: only
   // work in flight and who is logged in.
   dataDir: string;
-  // null only with PICKER_AUTH=off (local dev): then every request is let in.
+  // null only with PICKER_AUTH=off or off-any-host (local dev): then every request is let in.
   auth: AuthConfig | null;
   tls: { certFile: string; keyFile: string } | null;
   // HTTP basic auth on /healthz (it names internal errors). Required with the login on.
@@ -159,4 +159,3 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     healthz,
   };
 }
-

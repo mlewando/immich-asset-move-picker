@@ -25,12 +25,12 @@ export const api = {
   status: (opts) => get('/api/status', opts),
   members: () => get('/api/members'),
   // filter: { album, from, to } (each optional; from/to YYYY-MM-DD)
-  memberAssets: (id, filter = {}) => {
+  memberAssets: (id, filter = {}, opts) => {
     const q = new URLSearchParams(Object.entries(filter).filter(([, v]) => v)).toString();
-    return get(`/api/members/${id}/assets${q ? `?${q}` : ''}`);
+    return get(`/api/members/${id}/assets${q ? `?${q}` : ''}`, opts);
   },
   memberAlbums: (id) => get(`/api/members/${id}/albums`),
-  familyAssets: () => get('/api/family/assets'),
+  familyAssets: (opts) => get('/api/family/assets', opts),
   jobs: (opts) => get('/api/jobs', opts),
   move: (memberId, assetIds) => request('POST', '/api/moves', { memberId, assetIds }),
   giveBack: (assetIds) => request('POST', '/api/givebacks', { assetIds }),

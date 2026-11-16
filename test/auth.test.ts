@@ -152,6 +152,21 @@ test("login: a flood of started logins does not break a curator's login in progr
   await app.close();
 });
 
+test('login: a browser keeps at most 5 logins in progress, the newest', async () => {
+  const { app, advance } = await makeApp(fakeOidc().oidc);
+  const jar: Record<string, string> = {};
+  for (let i = 0; i < 8; i++) {
+    const start = await app.inject({ url: '/oauth2/start', cookies: jar });
+    for (const c of start.cookies) {
+      if (c.value) jar[c.name] = c.value;
+      else delete jar[c.name];
+    }
+    advance(1000);
+  }
+  assert.equal(Object.keys(jar).length, 5);
+  await app.close();
+});
+
 test('login: 2 tabs logging in at once both succeed, in either order', async () => {
   const { app, callback } = await makeApp(fakeOidc().oidc);
   const a = await app.inject('/oauth2/start?rd=/a');
@@ -272,17 +287,19 @@ test('session: a refused refresh (invalid grant, no email) or a lost group ends 
   }
 });
 
-test('session: a provider error with a 5xx is retried, not a refusal', async () => {
-  const f = fakeOidc({
-    refresh: async () => {
-      throw new client.ResponseBodyError('server_error', { cause: { error: 'server_error' }, response: new Response('{}', { status: 503 }) });
-    },
-  });
-  const { app, advance, status, login } = await makeApp(f.oidc);
-  const { session } = await login();
-  advance(REFRESH_MS);
-  assert.equal(await status(session), 200);
-  await app.close();
+test('session: a provider error with a 5xx or 429 is retried, not a refusal', async () => {
+  for (const code of [503, 429]) {
+    const f = fakeOidc({
+      refresh: async () => {
+        throw new client.ResponseBodyError('try later', { cause: { error: 'server_error' }, response: new Response('{}', { status: code }) });
+      },
+    });
+    const { app, advance, status, login } = await makeApp(f.oidc);
+    const { session } = await login();
+    advance(REFRESH_MS);
+    assert.equal(await status(session), 200, String(code));
+    await app.close();
+  }
 });
 
 test('session: a token rotated by a refresh that failed later is the one retried', async () => {
