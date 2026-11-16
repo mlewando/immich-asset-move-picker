@@ -39,6 +39,19 @@ export type Oidc = {
 /** The provider answered, and the answer means no (as opposed to not answering at all). */
 export class ProviderRefused extends Error {}
 
+/**
+ * The refresh grant went through but reading the user didn't. The provider has already rotated
+ * the refresh token: the new one must be kept, since retrying with the spent one would make the
+ * provider revoke the whole session.
+ */
+export class RefreshUnfinished extends Error {
+  readonly refreshToken: string | null;
+  constructor(refreshToken: string | null, cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.refreshToken = refreshToken;
+  }
+}
+
 export const REFRESH_MS = 5 * 60_000;
 // A provider that can't be reached isn't a logout at once: retry every RETRY_MS, for at most
 // REFRESH_GRACE_MS past the due refresh; after that a session can't be vouched for any more.
@@ -99,7 +112,13 @@ export function createOidc(cfg: AuthConfig): Oidc {
     },
     async refresh(refreshToken, sub) {
       const c = await config();
-      return identity(c, await client.refreshTokenGrant(c, refreshToken), sub);
+      const tokens = await client.refreshTokenGrant(c, refreshToken);
+      try {
+        return await identity(c, tokens, sub);
+      } catch (err) {
+        if (refused(err)) throw err;
+        throw new RefreshUnfinished(tokens.refresh_token ?? null, err);
+      }
     },
     async revoke(refreshToken) {
       await client.tokenRevocation(await config(), refreshToken, { token_type_hint: 'refresh_token' });
@@ -128,9 +147,10 @@ declare module 'fastify' {
 /** GET and HEAD change nothing; every other method is a write (and needs X-Picker, server.ts). */
 export const isSafeMethod = (method: string) => method === 'GET' || method === 'HEAD';
 
+// An OAuth error with a 5xx (server_error, temporarily_unavailable) means "try later", not no.
 const refused = (err: unknown) =>
   err instanceof ProviderRefused ||
-  err instanceof client.ResponseBodyError ||
+  (err instanceof client.ResponseBodyError && err.status < 500) ||
   err instanceof client.AuthorizationResponseError ||
   err instanceof client.WWWAuthenticateChallengeError;
 
@@ -164,11 +184,14 @@ function sessionKeeper({ config, oidc, sessions, now, log }: Required<AuthDeps> 
       return sessions.refreshed(s.key, who, refreshToken, now());
     } catch (err) {
       if (refused(err)) return end(s, `refresh refused (${(err as Error).message})`);
+      // Keep a rotated token; refreshedAt stays, so the grace time still counts.
+      const kept = err instanceof RefreshUnfinished && err.refreshToken ? sessions.refreshed(s.key, s, err.refreshToken, s.refreshedAt) : s;
+      if (!kept) return null;
       const t = now();
-      if (t - s.refreshedAt >= REFRESH_MS + REFRESH_GRACE_MS) return end(s, 'the provider was unreachable for too long');
+      if (t - s.refreshedAt >= REFRESH_MS + REFRESH_GRACE_MS) return end(kept, 'the provider was unreachable for too long');
       log.warn({ user: s.email, err: (err as Error).message }, 'session refresh failed; trying again later');
       retryAt.set(s.key, t + RETRY_MS);
-      return s;
+      return kept;
     }
   };
   const refresh = (s: Session): Promise<Session | null> => {

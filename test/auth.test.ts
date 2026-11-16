@@ -8,6 +8,7 @@ import {
   isLoopback,
   MAX_SESSION_MS,
   ProviderRefused,
+  RefreshUnfinished,
   REFRESH_GRACE_MS,
   REFRESH_MS,
   safeReturn,
@@ -269,6 +270,38 @@ test('session: a refused refresh (invalid grant, no email) or a lost group ends 
     assert.equal(await status(session), 401);
     await app.close();
   }
+});
+
+test('session: a provider error with a 5xx is retried, not a refusal', async () => {
+  const f = fakeOidc({
+    refresh: async () => {
+      throw new client.ResponseBodyError('server_error', { cause: { error: 'server_error' }, response: new Response('{}', { status: 503 }) });
+    },
+  });
+  const { app, advance, status, login } = await makeApp(f.oidc);
+  const { session } = await login();
+  advance(REFRESH_MS);
+  assert.equal(await status(session), 200);
+  await app.close();
+});
+
+test('session: a token rotated by a refresh that failed later is the one retried', async () => {
+  const used: string[] = [];
+  const f = fakeOidc({
+    refresh: async (token) => {
+      used.push(token);
+      if (used.length === 1) throw new RefreshUnfinished('rt-2', new TypeError('fetch failed'));
+      return { ...ANNA, refreshToken: 'rt-3' };
+    },
+  });
+  const { app, advance, status, login } = await makeApp(f.oidc);
+  const { session } = await login();
+  advance(REFRESH_MS);
+  assert.equal(await status(session), 200);
+  advance(MIN);
+  assert.equal(await status(session), 200);
+  assert.deepEqual(used, ['rt-1', 'rt-2']);
+  await app.close();
 });
 
 test('session: timed polls keep it checked but not alive', async () => {

@@ -332,7 +332,7 @@ function basicAuth(creds: { user: string; password: string }) {
   const digest = (s: string) => createHash('sha256').update(s).digest();
   const expected = digest(`${creds.user}:${creds.password}`);
   return async (req: FastifyRequest, reply: FastifyReply) => {
-    const m = /^Basic ([A-Za-z0-9+/=]+)$/.exec(req.headers.authorization ?? '');
+    const m = /^Basic ([A-Za-z0-9+/=]+)$/i.exec(req.headers.authorization ?? '');
     if (m && timingSafeEqual(digest(Buffer.from(m[1]!, 'base64').toString('utf8')), expected)) return;
     return reply.code(401).header('www-authenticate', 'Basic realm="picker healthz"').send({ error: 'unauthorized' });
   };
