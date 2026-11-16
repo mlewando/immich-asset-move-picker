@@ -232,6 +232,8 @@ async function main(): Promise<void> {
   mkdirSync(join(DATA, 'metrics'), { recursive: true });
   const env = {
     PICKER_LISTEN: '127.0.0.1:2284',
+    // No login locally (no identity provider); test/auth.test.ts covers it against a mock one.
+    PICKER_AUTH: 'off',
     IMMICH_API_URL: API,
     IMMICH_FAMILY_API_KEY: familyKey,
     PGHOST: '127.0.0.1',

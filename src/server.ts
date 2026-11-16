@@ -1,11 +1,12 @@
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fastifyStatic from '@fastify/static';
-import Fastify, { LogController, type FastifyInstance, type FastifyReply } from 'fastify';
+import Fastify, { LogController, type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
+import { isSafeMethod, registerAuth, type AuthDeps } from './auth.ts';
 import type { GuardResult, Immich, MediaKind } from './immich/index.ts';
-import type { Queue } from './queue.ts';
+import type { Kind, Queue } from './queue.ts';
 import type { Worker } from './worker.ts';
 
 // The HTTP layer only reads from Immich; writes happen in the worker.
@@ -61,12 +62,38 @@ const gridItemSchema = {
 } as const;
 const errorSchema = { type: 'object', properties: { error: { type: 'string' } } } as const;
 const uuidParam = { type: 'string', format: 'uuid' } as const;
+const memberParams = { type: 'object', required: ['id'], properties: { id: uuidParam } } as const;
+const assetIds = { type: 'array', minItems: 1, maxItems: 10_000, uniqueItems: true, items: uuidParam } as const;
 
-export async function buildApp(deps: ServerDeps, opts: { logger?: boolean } = {}): Promise<FastifyInstance> {
+type AppOptions = {
+  logger?: boolean;
+  // Login (OIDC). Without it every request is let in: only with PICKER_AUTH=off (dev, tests).
+  auth?: AuthDeps | null;
+  // Serve HTTPS with this certificate (PEM), e.g. when the network reaches the picker directly.
+  https?: { key: Buffer; cert: Buffer } | null;
+  // Basic-auth credentials for /healthz; without them it is open (dev, tests).
+  healthz?: { user: string; password: string } | null;
+};
+
+export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise<FastifyInstance> {
+  // With the https option Fastify types the instance as an https server's; nothing here depends
+  // on which, so it is used as the plain type.
   const app = Fastify({
     logger: opts.logger ?? false,
     // A grid view fires hundreds of thumbnail requests; log errors, not every request.
     logController: new LogController({ disableRequestLogging: true }),
+    ...(opts.https ? { https: opts.https } : {}),
+  }) as unknown as FastifyInstance;
+
+  // Every request passes these onRequest hooks, in this order, before its route's schema check and
+  // handler: 1. the login (auth.ts; routes marked `config: { public: true }` skip it), 2. X-Picker.
+  app.decorateRequest('user', null);
+  if (opts.auth) await registerAuth(app, opts.auth);
+  // Every mutating request must carry X-Picker: 1 (a cross-site form post can't set it).
+  app.addHook('onRequest', async (req, reply) => {
+    if (!isSafeMethod(req.method) && req.headers['x-picker'] !== '1') {
+      return reply.code(403).send({ error: 'missing X-Picker header' });
+    }
   });
 
   // Serves the page (public/, no directory listing, files registered at startup) and provides
@@ -86,11 +113,7 @@ export async function buildApp(deps: ServerDeps, opts: { logger?: boolean } = {}
   // The page's own URLs (client-side routes) all load the same index.html.
   const page = (_req: unknown, reply: FastifyReply) => reply.sendFile('index.html');
   app.get('/family', page);
-  app.get(
-    '/members/:id',
-    { schema: { params: { type: 'object', required: ['id'], properties: { id: uuidParam } } } },
-    page,
-  );
+  app.get('/members/:id', { schema: { params: memberParams } }, page);
 
   // Browser builds of the UI libraries, straight from node_modules (no CDN, no build step).
   app.get<{ Params: { file: keyof typeof VENDOR } }>(
@@ -110,13 +133,6 @@ export async function buildApp(deps: ServerDeps, opts: { logger?: boolean } = {}
     reply.header('referrer-policy', 'no-referrer');
   });
 
-  // Every mutating request must carry X-Picker: 1 (a cross-site form post can't set it).
-  app.addHook('onRequest', async (req, reply) => {
-    if (req.method !== 'GET' && req.method !== 'HEAD' && req.headers['x-picker'] !== '1') {
-      return reply.code(403).send({ error: 'missing X-Picker header' });
-    }
-  });
-
   app.setErrorHandler((err: { statusCode?: number; message: string; headers?: Record<string, string> }, req, reply) => {
     const status = err.statusCode ?? 500;
     if (err.headers) reply.headers(err.headers); // e.g. Content-Range on a 416 from sendFile
@@ -129,20 +145,21 @@ export async function buildApp(deps: ServerDeps, opts: { logger?: boolean } = {}
   app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: 'not found' }));
 
   // 200 when the DB and Immich are reachable, even when the guard fails (the app stays up,
-  // read-only).
-  app.get('/healthz', async (_req, reply) => {
+  // read-only). It names internal errors, so outside dev it needs its own basic auth (probes have
+  // no login session).
+  // The last guard result, or "not checked yet" before the 1st check.
+  const guardState = () => deps.guard() ?? { ok: false, problems: ['not checked yet'] };
+
+  const healthzAuth = opts.healthz ? basicAuth(opts.healthz) : [];
+  app.get('/healthz', { config: { public: true }, onRequest: healthzAuth }, async (_req, reply) => {
     const { db, api: immich } = await deps.immich.ping();
-    const guard = deps.guard();
-    return reply.code(db === 'ok' && immich === 'ok' ? 200 : 503).send({
-      db,
-      immich,
-      guard: guard ? { ok: guard.ok, problems: guard.problems } : { ok: false, problems: ['not checked yet'] },
-    });
+    const { ok, problems } = guardState();
+    return reply.code(db === 'ok' && immich === 'ok' ? 200 : 503).send({ db, immich, guard: { ok, problems } });
   });
 
   app.get('/api/status', async () => {
-    const g = deps.guard();
-    return { readOnly: !g?.ok, problems: g ? g.problems : ['not checked yet'] };
+    const { ok, problems } = guardState();
+    return { readOnly: !ok, problems };
   });
 
   app.get('/api/members', { schema: { response: { 200: { type: 'array', items: memberSchema } } } }, async () =>
@@ -151,7 +168,6 @@ export async function buildApp(deps: ServerDeps, opts: { logger?: boolean } = {}
   // Only a live member is a picking source, never the family account.
   const isMember = async (id: string) => (await deps.immich.members()).some((m) => m.id === id);
 
-  const memberParams = { type: 'object', required: ['id'], properties: { id: uuidParam } } as const;
   const day = { type: 'string', format: 'date' } as const; // YYYY-MM-DD
 
   app.get<{ Params: { id: string }; Querystring: { album?: string; from?: string; to?: string } }>(
@@ -205,7 +221,7 @@ export async function buildApp(deps: ServerDeps, opts: { logger?: boolean } = {}
   );
 
   // --- Move to family and Give back: 1 queue of jobs -----------------------------------------
-  app.get('/api/moves', async () => {
+  app.get('/api/jobs', async () => {
     const counts = deps.queue.counts();
     const failed = deps.queue.failed();
     // File names for the failed list come from Immich (the queue only keeps ids).
@@ -228,72 +244,62 @@ export async function buildApp(deps: ServerDeps, opts: { logger?: boolean } = {}
     };
   });
 
+  // No new writes while the guard fails (or before its first check).
+  const writable = async (_req: FastifyRequest, reply: FastifyReply) => {
+    if (!deps.guard()?.ok) return reply.code(409).send({ error: 'read-only: the upgrade guard failed' });
+  };
+
+  // Queues the jobs and wakes the worker. No check here whether each asset can go: it could be
+  // stale by the time the worker runs. The worker's Immich calls refuse what can't, and that job
+  // is listed as failed with the reason.
+  const queueJobs = (req: FastifyRequest, kind: Kind, ids: string[], memberId: string | null = null) => {
+    const requestedBy = req.user?.email ?? null; // null when the login is off (local dev)
+    const queued = deps.queue.enqueue(kind, ids, { memberId, requestedBy });
+    const alreadyQueued = ids.length - queued.length;
+    req.log.info({ by: requestedBy, kind, memberId, queued: queued.length, alreadyQueued }, `${kind} requested`);
+    if (queued.length) deps.worker.kick();
+    return { queued: queued.length, alreadyQueued };
+  };
+
   app.post<{ Body: { memberId: string; assetIds: string[] } }>(
     '/api/moves',
     {
+      preHandler: writable,
       schema: {
         body: {
           type: 'object',
           required: ['memberId', 'assetIds'],
           additionalProperties: false,
-          properties: {
-            memberId: uuidParam,
-            assetIds: { type: 'array', minItems: 1, maxItems: 10_000, uniqueItems: true, items: uuidParam },
-          },
+          properties: { memberId: uuidParam, assetIds },
         },
       },
     },
     async (req, reply) => {
-      // No new writes while the guard fails (or before its first check).
-      if (!deps.guard()?.ok) return reply.code(409).send({ error: 'read-only: the upgrade guard failed' });
-
       const { memberId, assetIds } = req.body;
       if (!(await isMember(memberId))) return reply.code(404).send({ error: 'no such member' });
-      // No movability check here: it could be stale by the time the worker runs. The worker's
-      // Immich calls refuse what can't be moved, and that move is listed as failed.
-      // Log who asked (the auth proxy in front sets it; absent in local dev).
-      const by = typeof req.headers['x-forwarded-email'] === 'string' ? req.headers['x-forwarded-email'] : null;
-      const queued = deps.queue.enqueue(memberId, assetIds, by);
-      const alreadyQueued = assetIds.length - queued.length;
-      req.log.info({ by, memberId, queued: queued.length, alreadyQueued }, 'move to family requested');
-      if (queued.length) deps.worker.kick();
-      return reply.code(202).send({ queued: queued.length, alreadyQueued });
+      return reply.code(202).send(queueJobs(req, 'move', assetIds, memberId));
     },
   );
 
-  // Give back: family assets (stacks by their primary) back to the members they came from. Like
-  // a move, decided by the worker: what has no original fails with the reason.
+  // Give back: family assets (stacks by their primary) back to the members they came from.
   app.post<{ Body: { assetIds: string[] } }>(
     '/api/givebacks',
     {
-      schema: {
-        body: {
-          type: 'object',
-          required: ['assetIds'],
-          additionalProperties: false,
-          properties: { assetIds: { type: 'array', minItems: 1, maxItems: 10_000, uniqueItems: true, items: uuidParam } },
-        },
-      },
+      preHandler: writable,
+      schema: { body: { type: 'object', required: ['assetIds'], additionalProperties: false, properties: { assetIds } } },
     },
-    async (req, reply) => {
-      if (!deps.guard()?.ok) return reply.code(409).send({ error: 'read-only: the upgrade guard failed' });
-      const { assetIds } = req.body;
-      const by = typeof req.headers['x-forwarded-email'] === 'string' ? req.headers['x-forwarded-email'] : null;
-      const queued = deps.queue.enqueue(null, assetIds, by, 'giveback');
-      const alreadyQueued = assetIds.length - queued.length;
-      req.log.info({ by, queued: queued.length, alreadyQueued }, 'give back requested');
-      if (queued.length) deps.worker.kick();
-      return reply.code(202).send({ queued: queued.length, alreadyQueued });
-    },
+    async (req, reply) => reply.code(202).send(queueJobs(req, 'giveback', req.body.assetIds)),
   );
 
   app.post<{ Params: { id: number } }>(
-    '/api/moves/:id/retry',
-    { schema: { params: { type: 'object', required: ['id'], properties: { id: { type: 'integer', minimum: 1 } } } } },
+    '/api/jobs/:id/retry',
+    {
+      preHandler: writable,
+      schema: { params: { type: 'object', required: ['id'], properties: { id: { type: 'integer', minimum: 1 } } } },
+    },
     async (req, reply) => {
-      if (!deps.guard()?.ok) return reply.code(409).send({ error: 'read-only: the upgrade guard failed' });
       if (!deps.queue.retry(req.params.id)) return reply.code(404).send({ error: 'no failed job with that id' });
-      req.log.info({ by: req.headers['x-forwarded-email'] ?? null, job: req.params.id }, 'retry requested');
+      req.log.info({ by: req.user?.email ?? null, job: req.params.id }, 'retry requested');
       deps.worker.kick();
       return reply.code(202).send({ retried: req.params.id });
     },
@@ -319,6 +325,17 @@ export async function buildApp(deps: ServerDeps, opts: { logger?: boolean } = {}
   );
 
   return app;
+}
+
+/** A route hook that admits only 1 user and password (HTTP basic auth, compared in constant time). */
+function basicAuth(creds: { user: string; password: string }) {
+  const digest = (s: string) => createHash('sha256').update(s).digest();
+  const expected = digest(`${creds.user}:${creds.password}`);
+  return async (req: FastifyRequest, reply: FastifyReply) => {
+    const m = /^Basic ([A-Za-z0-9+/=]+)$/.exec(req.headers.authorization ?? '');
+    if (m && timingSafeEqual(digest(Buffer.from(m[1]!, 'base64').toString('utf8')), expected)) return;
+    return reply.code(401).header('www-authenticate', 'Basic realm="picker healthz"').send({ error: 'unauthorized' });
+  };
 }
 
 // script-src allows our files plus the import map in index.html, pinned by its hash.

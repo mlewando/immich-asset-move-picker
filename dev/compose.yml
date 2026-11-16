@@ -63,6 +63,7 @@ services:
         required: false
     environment:
       PICKER_LISTEN: 0.0.0.0:2284
+      PICKER_AUTH: off-any-host
       IMMICH_API_URL: http://immich-server:2283/api
       PGHOST: database
       PGPORT: "5432"

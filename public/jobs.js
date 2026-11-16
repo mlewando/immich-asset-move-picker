@@ -1,5 +1,5 @@
-// Queue progress (Moves and Give backs) in the top bar: "Working on N…", failures with Retry, a paused worker, and the
-// Storage Template Migration reminder after moves.
+// Job progress (moves and give backs) in the top bar: "Working on N…", failures with Retry, a paused
+// worker, and the Storage Template Migration reminder after moves.
 import { h } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
@@ -8,35 +8,39 @@ import { Icon } from './icons.js';
 
 const html = htm.bind(h);
 
+// How often the jobs are polled: while some are queued or running, and otherwise.
+const POLL_BUSY_MS = 1500;
+const POLL_IDLE_MS = 10_000;
+
 /**
- * Polls GET /api/moves: every 1.5 s while moves are queued or running, else every 10 s.
- * Calls onMoved(n, moves) when n more queue rows finished since the last poll, `moves` of them
- * Moves (the rest are Give backs).
+ * Polls GET /api/jobs (POLL_BUSY_MS while jobs are queued or running, else POLL_IDLE_MS).
+ * Calls onDone(n, moves) when n more jobs finished since the last poll, `moves` of them moves
+ * (the rest are give backs).
  */
-export function useMoves(onMoved) {
+export function useJobs(onDone) {
   const [summary, setSummary] = useState(null);
   const lastDone = useRef(null);
   const lastMovesDone = useRef(null);
-  const onMovedRef = useRef(onMoved);
-  onMovedRef.current = onMoved;
+  const onDoneRef = useRef(onDone);
+  onDoneRef.current = onDone;
   const timer = useRef(0);
 
   const poll = useCallback(async () => {
     clearTimeout(timer.current);
     let active = false;
     try {
-      const s = await api.moves();
+      const s = await api.jobs({ poll: true });
       setSummary(s);
       active = s.pending + s.running > 0;
       if (lastDone.current !== null && s.done > lastDone.current) {
-        onMovedRef.current(s.done - lastDone.current, s.movesDone - lastMovesDone.current);
+        onDoneRef.current(s.done - lastDone.current, s.movesDone - lastMovesDone.current);
       }
       lastDone.current = s.done;
       lastMovesDone.current = s.movesDone;
     } catch {
       // Not ready yet (migrations) or offline: try again later.
     }
-    timer.current = setTimeout(poll, active ? 1500 : 10_000);
+    timer.current = setTimeout(poll, active ? POLL_BUSY_MS : POLL_IDLE_MS);
   }, []);
 
   useEffect(() => {
@@ -49,7 +53,7 @@ export function useMoves(onMoved) {
 
 const pillBase = 'inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium';
 
-export function MovesIndicator({ summary, onRetry }) {
+export function JobsIndicator({ summary, onRetry }) {
   const [open, setOpen] = useState(false);
   if (!summary) return null;
   const active = summary.pending + summary.running;

@@ -25,9 +25,11 @@
     "predev:app": "npm run build:css"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.1.5",
     "@fastify/static": "^10.1.10",
     "fastify": "^5.12.8",
     "htm": "^3.1.1",
+    "openid-client": "^6.8.9",
     "pg": "^8.23.1",
     "preact": "^11.2.0"
   },
@@ -35,6 +37,7 @@
     "@tailwindcss/cli": "^4.3.4",
     "@types/node": "^24.19.2",
     "@types/pg": "^8.23.1",
+    "oauth2-mock-server": "^9.3.0",
     "tailwindcss": "^4.3.4",
     "typescript": "^7.0.2"
   }

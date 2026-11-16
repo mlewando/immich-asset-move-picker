@@ -14,6 +14,13 @@ const valid = {
   PICKER_LIBRARY_SUBDIRS: 'upload, library,backups,encoded-video',
   PICKER_METRICS_DIR: '/metrics',
   PICKER_DATA_DIR: '/var/lib/picker',
+  PICKER_OIDC_ISSUER: 'https://auth.example.org',
+  PICKER_OIDC_CLIENT_ID: 'picker',
+  PICKER_OIDC_CLIENT_SECRET: 'secret-client-secret',
+  PICKER_OIDC_ALLOWED_GROUPS: 'photos-curators, admins',
+  PICKER_PUBLIC_URL: 'https://picker.example.org',
+  PICKER_HEALTHZ_USER: 'probe',
+  PICKER_HEALTHZ_PASSWORD: 'secret-healthz-password',
 };
 
 const problemsOf = (env: Record<string, string>): string[] => {
@@ -32,6 +39,43 @@ test('valid env → config with contract defaults', () => {
   assert.equal(c.immich.apiUrl, 'http://127.0.0.1:2283/api');
   assert.equal(c.db.port, 5432);
   assert.deepEqual(c.library.subdirs, ['upload', 'library', 'backups', 'encoded-video']);
+  assert.deepEqual(c.auth?.allowedGroups, ['photos-curators', 'admins']);
+  assert.equal(c.auth?.idleMs, 30 * 60_000);
+  assert.equal(c.tls, null);
+});
+
+test('the login is on unless PICKER_AUTH=off', () => {
+  const { PICKER_OIDC_ISSUER, PICKER_OIDC_CLIENT_SECRET, ...noOidc } = valid;
+  assert.deepEqual(problemsOf(noOidc), ['PICKER_OIDC_ISSUER is required', 'PICKER_OIDC_CLIENT_SECRET is required']);
+  const { PICKER_HEALTHZ_USER, PICKER_HEALTHZ_PASSWORD, ...dev } = noOidc;
+  assert.equal(loadConfig({ ...dev, PICKER_AUTH: 'off' }).auth, null);
+  assert.equal(loadConfig({ ...dev, PICKER_AUTH: 'off' }).healthz, null);
+  assert.deepEqual(problemsOf({ ...valid, PICKER_AUTH: 'none' }), ['PICKER_AUTH must be oidc, off or off-any-host']);
+});
+
+test('the login is never off on a network address by accident', () => {
+  const { PICKER_HEALTHZ_USER, PICKER_HEALTHZ_PASSWORD, ...dev } = valid;
+  assert.deepEqual(problemsOf({ ...dev, PICKER_AUTH: 'off', PICKER_LISTEN: '0.0.0.0:2284' }), [
+    'PICKER_AUTH=off needs a loopback PICKER_LISTEN',
+  ]);
+  assert.equal(loadConfig({ ...dev, PICKER_AUTH: 'off-any-host', PICKER_LISTEN: '0.0.0.0:2284' }).auth, null);
+});
+
+test('PICKER_PUBLIC_URL must be https except on loopback', () => {
+  assert.deepEqual(problemsOf({ ...valid, PICKER_PUBLIC_URL: 'http://picker.lan' }), [
+    'PICKER_PUBLIC_URL must be https (http only on loopback)',
+  ]);
+  assert.ok(loadConfig({ ...valid, PICKER_PUBLIC_URL: 'http://127.0.0.1:2284' }).auth);
+});
+
+test('session idle time and TLS files', () => {
+  assert.equal(loadConfig({ ...valid, PICKER_SESSION_IDLE: '2h' }).auth?.idleMs, 2 * 3_600_000);
+  assert.deepEqual(problemsOf({ ...valid, PICKER_SESSION_IDLE: '30' }), ['PICKER_SESSION_IDLE must be a duration like 30m']);
+  assert.deepEqual(loadConfig({ ...valid, PICKER_TLS_CERT: '/c.pem', PICKER_TLS_KEY: '/k.pem' }).tls, {
+    certFile: '/c.pem',
+    keyFile: '/k.pem',
+  });
+  assert.deepEqual(problemsOf({ ...valid, PICKER_TLS_CERT: '/c.pem' }), ['PICKER_TLS_CERT and PICKER_TLS_KEY go together']);
 });
 
 test('PICKER_LISTEN accepts host:port and [ipv6]:port', () => {
@@ -69,5 +113,14 @@ test('error message never contains secret values', () => {
     const msg = (err as Error).message;
     assert.ok(!msg.includes(valid.PGPASSWORD));
     assert.ok(!msg.includes(valid.IMMICH_FAMILY_API_KEY));
+    assert.ok(!msg.includes(valid.PICKER_OIDC_CLIENT_SECRET));
+    assert.ok(!msg.includes(valid.PICKER_HEALTHZ_PASSWORD));
   }
+});
+
+test('/healthz basic auth is required with the login on', () => {
+  const { PICKER_HEALTHZ_PASSWORD, ...noPassword } = valid;
+  assert.deepEqual(problemsOf(noPassword), ['PICKER_HEALTHZ_PASSWORD is required']);
+  assert.deepEqual(problemsOf({ ...valid, PICKER_HEALTHZ_USER: 'a:b' }), ['PICKER_HEALTHZ_USER must not contain ":"']);
+  assert.deepEqual(loadConfig(valid).healthz, { user: 'probe', password: 'secret-healthz-password' });
 });

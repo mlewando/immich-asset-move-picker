@@ -6,7 +6,8 @@ import type { ImmichApi, ServerVersion } from '../src/immich/api.ts';
 import type { Db } from '../src/immich/db.ts';
 import { EXPECTED_COLUMNS, EXPECTED_ENUMS, EXPECTED_WRITES } from '../src/immich/guard.ts';
 import type { Album, GridItem, MediaKind, Member } from '../src/immich/index.ts';
-import type { ServerImmich } from '../src/server.ts';
+import { openQueue } from '../src/queue.ts';
+import type { ServerDeps, ServerImmich } from '../src/server.ts';
 
 export const FAMILY_ID = '00000000-0000-4000-8000-00000000fa01';
 
@@ -98,3 +99,17 @@ export function fakeApi(version: ServerVersion | Error = { major: 3, minor: 3, p
     },
   };
 }
+
+export function fakeWorker() {
+  let kicks = 0;
+  return { kick: () => void kicks++, state: () => ({ running: false, paused: false, pausedReason: [] as string[] }), kicks: () => kicks };
+}
+
+/** Healthy server deps (no guard check yet, empty queue), with `over` replacing any of them. */
+export const serverDeps = (over: Partial<ServerDeps> = {}): ServerDeps => ({
+  immich: fakeImmich(),
+  guard: () => undefined,
+  queue: openQueue(':memory:'),
+  worker: fakeWorker(),
+  ...over,
+});

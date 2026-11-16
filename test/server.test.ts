@@ -8,7 +8,7 @@ import type { InjectOptions } from 'fastify';
 import type { GridItem, GuardResult } from '../src/immich/index.ts';
 import { openQueue } from '../src/queue.ts';
 import { buildApp, type ServerDeps } from '../src/server.ts';
-import { FAMILY_ID, fakeImmich } from './fakes.ts';
+import { FAMILY_ID, fakeImmich, fakeWorker, serverDeps } from './fakes.ts';
 
 const failedGuard: GuardResult = { ok: false, problems: ['Immich version 3.4.0, picker tested with 3.3.5'], checkedAt: new Date() };
 const guardOk = () => ({ ok: true, problems: [], checkedAt: new Date() });
@@ -27,20 +27,9 @@ writeFileSync(join(root, 'u1/.picker-x.tmp'), 'tmp');
 writeFileSync(join(root, 'u1/t.webp'), 'webp');
 after(() => rmSync(root, { recursive: true, force: true }));
 
-function fakeWorker() {
-  let kicks = 0;
-  return { kick: () => void kicks++, state: () => ({ running: false, paused: false, pausedReason: [] as string[] }), kicks: () => kicks };
-}
-
 // Fresh app per call, with the given deps overriding healthy defaults; no network port.
 async function call(over: Partial<ServerDeps>, req: InjectOptions | string) {
-  const app = await buildApp({
-    immich: fakeImmich(),
-    guard: () => undefined,
-    queue: openQueue(':memory:'),
-    worker: fakeWorker(),
-    ...over,
-  });
+  const app = await buildApp(serverDeps(over));
   try {
     return await app.inject(req);
   } finally {
@@ -77,7 +66,7 @@ test('page: client-side routes load index.html; malformed ones do not', async ()
 test('page: app modules and the vendored libraries named in the import map are served', async () => {
   const page = (await call({}, '/')).body;
   const { imports } = JSON.parse(/<script type="importmap">([\s\S]*?)<\/script>/.exec(page)![1]!) as { imports: Record<string, string> };
-  for (const url of [...Object.values(imports), '/app.js', '/api.js', '/selection.js', '/grid.js', '/viewer.js', '/icons.js', '/moves.js', '/app.css']) {
+  for (const url of [...Object.values(imports), '/app.js', '/api.js', '/selection.js', '/grid.js', '/viewer.js', '/icons.js', '/jobs.js', '/expiry.js', '/app.css']) {
     const res = await call({}, url);
     assert.equal(res.statusCode, 200, url);
   }
@@ -101,6 +90,18 @@ test('healthz 503 when DB or Immich down', async () => {
   assert.equal(api.json().immich, 'error: fetch failed');
 });
 
+test('healthz: basic auth when credentials are set', async () => {
+  const app = await buildApp(serverDeps(), { healthz: { user: 'probe', password: 'pw' } });
+  const basic = (s: string) => ({ authorization: `Basic ${Buffer.from(s).toString('base64')}` });
+  const none = await app.inject('/healthz');
+  assert.equal(none.statusCode, 401);
+  assert.match(String(none.headers['www-authenticate']), /^Basic /);
+  assert.ok(!('db' in none.json()));
+  assert.equal((await app.inject({ url: '/healthz', headers: basic('probe:wrong') })).statusCode, 401);
+  assert.equal((await app.inject({ url: '/healthz', headers: basic('probe:pw') })).statusCode, 200);
+  await app.close();
+});
+
 test('status reports read-only mode from the guard', async () => {
   assert.deepEqual((await call({ guard: () => failedGuard }, '/api/status')).json(), {
     readOnly: true,
@@ -117,7 +118,7 @@ test('mutating request: 403 without X-Picker: 1, else routed normally', async ()
 
 // --- moves ------------------------------------------------------------------------------------
 const members = () => fakeImmich({ members: [{ id: ANNA, name: 'Anna', email: 'a@x' }], names: { [ASSET]: 'f.jpg' } });
-const post = (url: string, payload?: unknown): InjectOptions => ({ method: 'POST', url, headers: { 'x-picker': '1', 'x-forwarded-email': 'curator@example.test' }, payload: payload as object });
+const post = (url: string, payload?: unknown): InjectOptions => ({ method: 'POST', url, headers: { 'x-picker': '1' }, payload: payload as object });
 
 test('moves: queues every id (the worker decides what can move), kicks the worker, not twice', async () => {
   const queue = openQueue(':memory:');
@@ -159,20 +160,20 @@ test('give backs: queued as kind giveback, kick, not twice; refused while read-o
 
 test('moves: summary (file names from Immich) and retry', async () => {
   const queue = openQueue(':memory:');
-  queue.enqueue(ANNA, [ASSET], null);
+  queue.enqueue('move', [ASSET], { memberId: ANNA });
   const m = queue.claimNext()!;
   queue.fail(m.id, 'asset is in the trash');
   const worker = fakeWorker();
-  const summary = (await call({ immich: members(), queue, worker }, '/api/moves')).json();
+  const summary = (await call({ immich: members(), queue, worker }, '/api/jobs')).json();
   assert.equal(summary.failed[0].fileName, 'f.jpg');
   assert.equal(summary.failed[0].error, 'asset is in the trash');
   assert.equal(summary.failed[0].step, 'queued');
   assert.deepEqual(summary.worker, { running: false, paused: false, pausedReason: [] });
 
-  assert.equal((await call({ guard: guardOk, queue, worker }, post(`/api/moves/${m.id}/retry`))).statusCode, 202);
+  assert.equal((await call({ guard: guardOk, queue, worker }, post(`/api/jobs/${m.id}/retry`))).statusCode, 202);
   assert.equal(queue.counts().pending, 1);
   assert.equal(worker.kicks(), 1);
-  assert.equal((await call({ guard: guardOk, queue, worker }, post(`/api/moves/${m.id}/retry`))).statusCode, 404, 'not failed any more');
+  assert.equal((await call({ guard: guardOk, queue, worker }, post(`/api/jobs/${m.id}/retry`))).statusCode, 404, 'not failed any more');
 });
 
 // --- read side --------------------------------------------------------------------------------
