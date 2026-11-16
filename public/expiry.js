@@ -5,11 +5,14 @@
 // - Kept alive: the session ends after some idle time. The page's timed polls don't count (they
 //   carry X-Picker-Poll), and looking at a photo in the viewer sends nothing, so while the user
 //   clicks, types or scrolls the page pings the server (at most once per PING_MS).
+// - Ended while nobody uses the tab: a poll's 401 doesn't reload (that would log an unused tab
+//   straight back in while the provider's own session lasts). The next click, key or scroll does.
 
 export const PING_MS = 60_000;
 
 export function makeExpiry({ fetch, reload, now = () => Date.now() }) {
   let reloading = false;
+  let ended = false;
   let probe = null;
   let lastPing = -Infinity;
 
@@ -36,15 +39,21 @@ export function makeExpiry({ fetch, reload, now = () => Date.now() }) {
     return probe;
   };
 
+  // A poll found the session gone: wait for the user.
+  const endedUnseen = () => {
+    ended = true;
+  };
+
   // The user did something: keep the session alive (the ping also notices an expired one).
   const active = () => {
+    if (ended) return expired();
     const t = now();
     if (t - lastPing < PING_MS) return;
     lastPing = t;
     check();
   };
 
-  return { isExpired, expired, check, active };
+  return { isExpired, expired, endedUnseen, check, active };
 }
 
 export const expiry = makeExpiry({

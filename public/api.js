@@ -11,7 +11,8 @@ async function request(method, url, body, { poll = false } = {}) {
   if (body !== undefined) headers['content-type'] = 'application/json';
   const res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   if (expiry.isExpired(res)) {
-    expiry.expired();
+    if (poll) expiry.endedUnseen();
+    else expiry.expired();
     throw new Error('Session expired, reloading');
   }
   const data = await res.json().catch(() => null);

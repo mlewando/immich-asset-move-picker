@@ -59,3 +59,12 @@ test('activity pings at most once per PING_MS', async () => {
   await Promise.resolve();
   assert.equal(counts().fetches, 2);
 });
+
+test('a session ended while unused reloads only on the next activity', () => {
+  const { e, counts } = setup(200);
+  e.endedUnseen();
+  e.endedUnseen();
+  assert.equal(counts().reloads, 0);
+  e.active();
+  assert.deepEqual(counts(), { fetches: 0, reloads: 1 });
+});
