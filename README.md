@@ -35,8 +35,7 @@ Nothing is ever deleted that has no other copy, and every step can be resumed af
   lasts as long as the user is active: it ends after `PICKER_SESSION_IDLE` without a request, and
   at the latest 12 hours after the login. Every 5 minutes a refresh re-reads the user from the
   provider, so someone disabled or removed from the groups is out within 5 minutes; if the
-  provider stays unreachable for 30 minutes past that, the session ends too. Signing out
-  (`POST /oauth2/sign_out`) revokes the refresh token.
+  provider stays unreachable for 30 minutes past that, the session ends too.
 
 ## Running
 ```sh
