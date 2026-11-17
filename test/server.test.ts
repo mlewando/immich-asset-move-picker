@@ -8,7 +8,7 @@ import type { InjectOptions } from 'fastify';
 import type { GridItem, GuardResult } from '../src/immich/index.ts';
 import { openQueue } from '../src/queue.ts';
 import { buildApp, type ServerDeps } from '../src/server.ts';
-import { FAMILY_ID, fakeImmich, fakeWorker, serverDeps } from './fakes.ts';
+import { FAMILY_ID, fakeImmich, fakeWorker, serverDeps, withCsrf } from './fakes.ts';
 
 const failedGuard: GuardResult = { ok: false, problems: ['Immich version 3.4.0, picker tested with 3.3.5'], checkedAt: new Date() };
 const guardOk = () => ({ ok: true, problems: [], checkedAt: new Date() });
@@ -27,11 +27,13 @@ writeFileSync(join(root, 'u1/.picker-x.tmp'), 'tmp');
 writeFileSync(join(root, 'u1/t.webp'), 'webp');
 after(() => rmSync(root, { recursive: true, force: true }));
 
-// Fresh app per call, with the given deps overriding healthy defaults; no network port.
+// Fresh app per call, with the given deps overriding healthy defaults; no network port. A write
+// gets its CSRF token the way the page does, unless it brings its own csrf-token header.
 async function call(over: Partial<ServerDeps>, req: InjectOptions | string) {
   const app = await buildApp(serverDeps(over));
   try {
-    return await app.inject(req);
+    const write = typeof req !== 'string' && req.method && req.method !== 'GET' && !req.headers?.['csrf-token'];
+    return await app.inject(write ? await withCsrf(app, req) : req);
   } finally {
     await app.close();
   }
@@ -46,6 +48,7 @@ test('page: index.html with CSP that allows exactly its import map', async () =>
   const csp = String(res.headers['content-security-policy']);
   assert.ok(csp.includes(`script-src 'self' 'sha256-${hash}'`), csp);
   assert.ok(csp.includes("default-src 'none'"));
+  assert.ok(!csp.includes('upgrade-insecure-requests'), 'not on plain http (dev, tests)');
   assert.equal(res.headers['x-content-type-options'], 'nosniff');
   // Revalidated on every load, so an update is never hidden behind a heuristically cached app.js.
   assert.equal(res.headers['cache-control'], 'public, max-age=0');
@@ -111,15 +114,21 @@ test('status reports read-only mode from the guard', async () => {
   assert.deepEqual((await call({ guard: guardOk }, '/api/status')).json(), { readOnly: false, problems: [], user: null });
 });
 
-test('mutating request: 403 without X-Picker: 1, else routed normally', async () => {
-  assert.equal((await call({}, { method: 'POST', url: '/api/members' })).statusCode, 403);
-  assert.equal((await call({}, { method: 'POST', url: '/api/members', headers: { 'x-picker': '1' } })).statusCode, 404);
-  assert.equal((await call({}, { method: 'POST', url: '/api/moves', payload: {} })).statusCode, 403);
+test('a write needs the CSRF token from GET /api/csrf, with its cookie', async () => {
+  const app = await buildApp(serverDeps({ guard: guardOk }));
+  const body = { method: 'POST', url: '/api/givebacks', payload: { assetIds: [ASSET] } } as const;
+  assert.equal((await app.inject(body)).statusCode, 403, 'no token');
+  const ok = await withCsrf(app, body);
+  assert.equal((await app.inject({ ...ok, headers: { 'csrf-token': 'forged' } })).statusCode, 403, 'wrong token');
+  assert.equal((await app.inject({ ...ok, cookies: {} })).statusCode, 403, 'token without its cookie');
+  assert.equal((await app.inject(ok)).statusCode, 202);
+  assert.equal((await call({}, { method: 'POST', url: '/api/members' })).statusCode, 404, 'with a token: routed normally');
+  await app.close();
 });
 
 // --- moves ------------------------------------------------------------------------------------
 const members = () => fakeImmich({ members: [{ id: ANNA, name: 'Anna', email: 'a@x' }], names: { [ASSET]: 'f.jpg' } });
-const post = (url: string, payload?: unknown): InjectOptions => ({ method: 'POST', url, headers: { 'x-picker': '1' }, payload: payload as object });
+const post = (url: string, payload?: unknown): InjectOptions => ({ method: 'POST', url, payload: payload as object });
 
 test('moves: queues every id (the worker decides what can move), kicks the worker, not twice', async () => {
   const queue = openQueue(':memory:');

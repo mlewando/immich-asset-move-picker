@@ -2,6 +2,7 @@
 //   - fakeImmich: the app-facing Immich interface (src/immich/index.ts), backed by plain data.
 //   - fakeDb / fakeApi: internals of src/immich/, for the guard's unit tests. The fake DB answers
 //     the guard's queries from an in-memory picture of the schema, which tests mutate.
+import type { FastifyInstance, InjectOptions } from 'fastify';
 import type { ImmichApi, ServerVersion } from '../src/immich/api.ts';
 import type { Db } from '../src/immich/db.ts';
 import { EXPECTED_COLUMNS, EXPECTED_ENUMS, EXPECTED_WRITES } from '../src/immich/guard.ts';
@@ -113,3 +114,16 @@ export const serverDeps = (over: Partial<ServerDeps> = {}): ServerDeps => ({
   worker: fakeWorker(),
   ...over,
 });
+
+/** A write as the page sends it: with the token and cookie GET /api/csrf hands out. */
+export async function withCsrf(app: FastifyInstance, req: InjectOptions): Promise<InjectOptions> {
+  const cookies = (req.cookies ?? {}) as Record<string, string>;
+  const res = await app.inject({ url: '/api/csrf', cookies });
+  const secret = res.cookies.find((c) => c.name.endsWith('picker_csrf'));
+  if (!secret) throw new Error(`no CSRF cookie (GET /api/csrf → ${res.statusCode})`);
+  return {
+    ...req,
+    headers: { ...req.headers, 'csrf-token': (res.json() as { token: string }).token },
+    cookies: { ...cookies, [secret.name]: secret.value },
+  };
+}

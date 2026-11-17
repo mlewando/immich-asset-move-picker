@@ -69,10 +69,10 @@ because it names internal errors.
 | `PICKER_OIDC_ISSUER` | the provider's issuer URL, e.g. `https://auth.example.org` |
 | `PICKER_OIDC_CLIENT_ID` `PICKER_OIDC_CLIENT_SECRET` | the picker's client at the provider |
 | `PICKER_OIDC_ALLOWED_GROUPS` | comma-separated; a user must be in at least 1 |
-| `PICKER_SESSION_IDLE` | idle time that ends a session, default `30m` (`s`/`m`/`h`) |
+| `PICKER_SESSION_IDLE` | idle time that ends a session, default `30m` (`s`/`m`/`h`); a change applies to logins after it |
 | `PICKER_OIDC_LOGOUT_URL` | optional, https: where Sign out sends the browser next, the provider's logout page (Authelia: `https://auth.example.org/logout?rd=<encoded PICKER_PUBLIC_URL/signed-out>`); default the picker's own signed-out page |
 | `PICKER_HEALTHZ_USER` `PICKER_HEALTHZ_PASSWORD` | basic auth for `/healthz`; required unless `PICKER_AUTH=off` |
-| `PICKER_TLS_CERT` `PICKER_TLS_KEY` | optional PEM files: serve HTTPS (read on start; restart after renewal) |
+| `PICKER_TLS_CERT` `PICKER_TLS_KEY` | PEM files: serve HTTPS (read on start; restart after renewal). Required when `PICKER_PUBLIC_URL` is https: the session cookie is then Secure and is set only on HTTPS requests |
 | `PICKER_AUTH` | `off` disables the login (local development only; needs a loopback `PICKER_LISTEN`); `off-any-host` also allows other listen addresses (a dev container); default `oidc` |
 
 After moving, run *Administration → Jobs → Storage Template Migration* in Immich so the family
@@ -116,6 +116,7 @@ the changes since the previous release and the image's digest.
 **Code layout:** `src/immich/` is the only code that knows Immich (its API, database schema, file
 layout and the upgrade guard) behind 1 interface, `src/immich/index.ts`. Supporting a new Immich
 version means changing that folder and its tests. The rest: `src/queue.ts` (job queue),
-`src/worker.ts` (move and give-back steps), `src/server.ts` (HTTP API), `src/auth.ts` +
-`src/sessions.ts` (OIDC login and sessions), `public/` (the page,
+`src/worker.ts` (move and give-back steps), `src/server.ts` (HTTP API), `src/auth.ts` (OIDC
+login; sessions by `@fastify/session` with the SQLite store in `src/session-store.ts`, the
+provider's tokens apart in `src/oidc-credentials.ts`), `public/` (the page,
 Preact + htm).

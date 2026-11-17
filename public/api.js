@@ -1,12 +1,30 @@
 // Thin wrappers over the picker's API (src/server.ts).
 import { expiry } from './expiry.js';
 
+// Every write carries the CSRF token (GET /api/csrf), fetched before the 1st write and again
+// when the server no longer accepts it (its cookie gone, e.g. after a browser restart). `failed`:
+// the token a write was refused with; writes refused together share 1 new token, else each fetch
+// would replace the cookie the other's token belongs to.
+let csrf = null;
+const csrfToken = (failed) => {
+  if (!csrf || (failed && csrf === failed)) {
+    csrf = request('GET', '/api/csrf').then(
+      (r) => r.token,
+      (err) => {
+        csrf = null;
+        throw err;
+      },
+    );
+  }
+  return csrf;
+};
+
 // poll: a timed background request, not the user's doing. It carries X-Picker-Poll, so the
 // server doesn't count it as activity and an open but unused tab still goes idle.
-async function request(method, url, body, { poll = false } = {}) {
+async function request(method, url, body, { poll = false, failedToken = null } = {}) {
   const headers = { accept: 'application/json' };
-  // Every mutating request carries X-Picker: 1 (a cross-site form post can't set it).
-  if (method !== 'GET') headers['x-picker'] = '1';
+  const token = method === 'GET' ? null : csrfToken(failedToken);
+  if (token) headers['csrf-token'] = await token;
   if (poll) headers['x-picker-poll'] = '1';
   if (body !== undefined) headers['content-type'] = 'application/json';
   const res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -16,6 +34,9 @@ async function request(method, url, body, { poll = false } = {}) {
     throw new Error('Session expired, reloading');
   }
   const data = await res.json().catch(() => null);
+  if (res.status === 403 && token && !failedToken && /csrf/i.test(data?.error ?? '')) {
+    return request(method, url, body, { poll, failedToken: token });
+  }
   if (!res.ok) throw new Error(data?.error ?? `${url}: HTTP ${res.status}`);
   return data;
 }

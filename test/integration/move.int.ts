@@ -40,8 +40,17 @@ const json = async <T>(path: string, init?: RequestInit): Promise<{ status: numb
   const res = await fetch(`${base}${path}`, init);
   return { status: res.status, body: (await res.json()) as T };
 };
-const post = (path: string, body: unknown) =>
-  json(path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-picker': '1' }, body: JSON.stringify(body) });
+// A write as the page sends it: the CSRF token from GET /api/csrf, with its cookie.
+let csrf: { token: string; cookie: string } | undefined;
+const writeHeaders = async () => {
+  if (!csrf) {
+    const res = await fetch(`${base}/api/csrf`);
+    csrf = { cookie: res.headers.getSetCookie()[0]!.split(';')[0]!, token: ((await res.json()) as { token: string }).token };
+  }
+  return { 'content-type': 'application/json', 'csrf-token': csrf.token, cookie: csrf.cookie };
+};
+const post = async (path: string, body: unknown) =>
+  json(path, { method: 'POST', headers: await writeHeaders(), body: JSON.stringify(body) });
 
 const asset = async (id: string) =>
   (await db.query<{ visibility: string; checksum: Buffer; localDateTime: Date }>(
@@ -252,7 +261,7 @@ test('give back: photo, live photo and stack return to the member; family copies
   };
 
   const res = await json<{ queued: number }>('/api/givebacks', {
-    method: 'POST', headers: { 'content-type': 'application/json', 'x-picker': '1' },
+    method: 'POST', headers: await writeHeaders(),
     body: JSON.stringify({ assetIds: [familyIds.photo10, familyIds.still, familyIds.burst[0]] }),
   });
   assert.deepEqual(res.body, { queued: 3, alreadyQueued: 0 });
@@ -273,7 +282,7 @@ test('give back: photo, live photo and stack return to the member; family copies
 test("give back without an original (family-only.jpg) fails with the reason; nothing deleted", async () => {
   const [famOnly] = await db.query<{ id: string }>(`SELECT id FROM asset WHERE "ownerId" = $1 AND "originalFileName" = 'family-only.jpg' AND "deletedAt" IS NULL`, [familyId]);
   await json('/api/givebacks', {
-    method: 'POST', headers: { 'content-type': 'application/json', 'x-picker': '1' },
+    method: 'POST', headers: await writeHeaders(),
     body: JSON.stringify({ assetIds: [famOnly!.id] }),
   });
   await worker.idle();

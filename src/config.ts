@@ -150,6 +150,10 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
   const keyFile = env.PICKER_TLS_KEY?.trim() ?? '';
   if (Boolean(certFile) !== Boolean(keyFile)) problems.push('PICKER_TLS_CERT and PICKER_TLS_KEY go together');
   const tls = certFile && keyFile ? { certFile, keyFile } : null;
+  // The session cookie is Secure then, and @fastify/session sets it only on an https request.
+  if (auth?.publicUrl.protocol === 'https:' && !tls) {
+    problems.push('PICKER_PUBLIC_URL is https: the picker must serve https itself (PICKER_TLS_CERT, PICKER_TLS_KEY)');
+  }
 
   if (problems.length) throw new ConfigError(problems);
   return {

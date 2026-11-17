@@ -27,7 +27,11 @@
     "predev:app": "npm run build:css"
   },
   "dependencies": {
+    "@fastify/basic-auth": "^6.3.1",
     "@fastify/cookie": "^11.1.5",
+    "@fastify/csrf-protection": "^8.0.2",
+    "@fastify/helmet": "^13.2.0",
+    "@fastify/session": "^11.1.6",
     "@fastify/static": "^10.1.10",
     "fastify": "^5.12.8",
     "htm": "^3.1.1",

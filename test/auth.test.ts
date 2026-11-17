@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { after, before, test } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, before, mock, test } from 'node:test';
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
 import { OAuth2Server } from 'oauth2-mock-server';
 import * as client from 'openid-client';
@@ -18,7 +21,7 @@ import {
 } from '../src/auth.ts';
 import { buildApp } from '../src/server.ts';
 import { openSessions } from '../src/sessions.ts';
-import { serverDeps } from './fakes.ts';
+import { serverDeps, withCsrf } from './fakes.ts';
 
 const MIN = 60_000;
 const HOME = 'http://picker.test/';
@@ -58,9 +61,18 @@ const loginCookieOf = (start: LightMyRequestResponse, prefix = '') => {
  * - callback(start): the callback for a started login (the provider's part is faked);
  * - login(rd): /oauth2/start then the callback → the callback response and the session cookie.
  */
-async function makeApp(oidc: Oidc, config = baseConfig()) {
-  let t = Date.parse('2026-11-15T10:00:00Z');
-  const app = await buildApp(serverDeps(), { auth: { config, oidc, sessions: openSessions(':memory:'), now: () => t } });
+async function makeApp(oidc: Oidc, config = baseConfig(), sessions = openSessions(':memory:')) {
+  // A fake clock for the whole app (@fastify/session reads Date.now too); advance() moves it.
+  mock.timers.reset();
+  mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-15T10:00:00Z') });
+  const app = await buildApp(serverDeps(), { auth: { config, oidc, sessions } });
+  // The picker serves https itself when its public URL is https; inject's requests are plain, so
+  // they say they came over TLS (else no Secure session cookie is set).
+  if (config.publicUrl.protocol === 'https:') {
+    app.addHook('onRequest', async (req) => {
+      (req.raw.socket as { encrypted?: boolean }).encrypted = true;
+    });
+  }
   const prefix = config.publicUrl.protocol === 'https:' ? '__Host-' : '';
   const status = async (session: string, { poll = false } = {}) =>
     (
@@ -80,7 +92,7 @@ async function makeApp(oidc: Oidc, config = baseConfig()) {
     const cb = await callback(start);
     return { cb, session: cb.statusCode === 302 ? cookieOf(cb, `${prefix}picker_session`).value : '' };
   };
-  return { app, prefix, status, callback, login, advance: (ms: number) => (t += ms) };
+  return { app, prefix, status, callback, login, advance: (ms: number) => mock.timers.tick(ms) };
 }
 
 /** A provider fake; `refresh` overrides are counted too. */
@@ -109,7 +121,7 @@ test('without a session: the page redirects to the login, background requests ge
   for (const url of ['/api/status', '/media/00000000-0000-4000-8000-00000000a551/thumbnail']) {
     assert.equal((await app.inject(url)).statusCode, 401, url);
   }
-  assert.equal((await app.inject({ method: 'POST', url: '/api/givebacks', headers: { 'x-picker': '1' } })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/givebacks' })).statusCode, 401);
   assert.equal((await app.inject('/healthz')).statusCode, 200);
   await app.close();
 });
@@ -207,10 +219,54 @@ test('login: a callback without its login cookie, or outside the allowed groups,
   await app.close();
 });
 
+test('login over a live login in the same browser: the new user, the old token revoked', async () => {
+  const BOB: Grant = { who: { ...ANNA.who, sub: 'bob', email: 'bob@example.org', name: 'Bob' }, refreshToken: 'rt-bob' };
+  const grants = [ANNA, BOB];
+  const f = fakeOidc({ codeGrant: async () => grants.shift()! });
+  const { app, login } = await makeApp(f.oidc);
+  const { session } = await login();
+  const start = await app.inject('/oauth2/start');
+  const lc = loginCookieOf(start);
+  const cb = await app.inject({ url: `/oauth2/callback?code=c&state=${lc.state}`, cookies: { [lc.name]: lc.value, picker_session: session } });
+  const next = cookieOf(cb, 'picker_session').value;
+  const me = await app.inject({ url: '/api/status', cookies: { picker_session: next } });
+  assert.equal(me.json().user, 'bob@example.org');
+  assert.deepEqual(f.revoked, ['rt-1']);
+  assert.equal((await app.inject({ url: '/api/status', cookies: { picker_session: session } })).statusCode, 401, "the old cookie's generation is gone");
+  await app.close();
+});
+
+test('sign out without the CSRF token: refused, in the shape the page retries on', async () => {
+  const { app, login } = await makeApp(fakeOidc().oidc);
+  const { session } = await login();
+  const out = await app.inject({ method: 'POST', url: '/oauth2/sign_out', cookies: { picker_session: session } });
+  assert.equal(out.statusCode, 403);
+  assert.match(out.json().error, /csrf/i);
+  await app.close();
+});
+
+test('session: a new id at every login (no session fixation), and it survives a restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'picker-auth-'));
+  const path = join(dir, 'sessions.db');
+  try {
+    const first = await makeApp(fakeOidc().oidc, baseConfig(), openSessions(path));
+    const a = (await first.login()).session;
+    const b = (await first.login()).session;
+    assert.notEqual(a, b);
+    await first.app.close();
+    const restarted = await makeApp(fakeOidc().oidc, baseConfig(), openSessions(path));
+    assert.equal(await restarted.status(b), 200);
+    await restarted.app.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('cookies: __Host- names when the picker is reached over https', async () => {
   const { app, prefix, status, callback } = await makeApp(fakeOidc().oidc, baseConfig({ publicUrl: new URL('https://picker.test') }));
   assert.equal(prefix, '__Host-');
   const start = await app.inject('/oauth2/start');
+  assert.match(String(start.headers['content-security-policy']), /upgrade-insecure-requests/, 'over https only');
   const lc = loginCookieOf(start, '__Host-');
   assert.ok(lc.secure && lc.path === '/');
   const cb = await callback(start);
@@ -326,12 +382,12 @@ test('session: timed polls keep it checked but not alive', async () => {
   const f = fakeOidc();
   const { app, advance, status, login } = await makeApp(f.oidc);
   const { session } = await login();
-  for (let t = 10 * MIN; t <= 30 * MIN; t += 10 * MIN) {
-    advance(10 * MIN);
-    assert.equal(await status(session, { poll: true }), 200, `poll after ${t / MIN}m`);
+  for (const t of [10, 20, 29]) {
+    advance(t === 29 ? 9 * MIN : 10 * MIN);
+    assert.equal(await status(session, { poll: true }), 200, `poll after ${t}m`);
   }
   assert.ok(f.refreshes() > 0, 'polls still refresh (and re-check) the session');
-  advance(1);
+  advance(MIN); // exactly PICKER_SESSION_IDLE after the login: over
   assert.equal(await status(session, { poll: true }), 401, 'idle: only polls since the login');
   await app.close();
 });
@@ -362,7 +418,7 @@ test('sign out ends the session, revokes its refresh token, and names where to g
   const { session } = await login();
   const me = await app.inject({ url: '/api/status', cookies: { picker_session: session } });
   assert.equal(me.json().user, 'anna@example.org');
-  const out = await app.inject({ method: 'POST', url: '/oauth2/sign_out', headers: { 'x-picker': '1' }, cookies: { picker_session: session } });
+  const out = await app.inject(await withCsrf(app, { method: 'POST', url: '/oauth2/sign_out', cookies: { picker_session: session } }));
   assert.deepEqual(out.json(), { next: '/signed-out' });
   assert.equal(await status(session), 401);
   assert.deepEqual(f.revoked, ['rt-1']);
@@ -376,7 +432,7 @@ test("sign out: with PICKER_OIDC_LOGOUT_URL the browser goes on to the provider'
   const logoutUrl = new URL('https://auth.test/logout?rd=https%3A%2F%2Fpicker.test%2Fsigned-out');
   const { app, login } = await makeApp(fakeOidc().oidc, baseConfig({ logoutUrl }));
   const { session } = await login();
-  const out = await app.inject({ method: 'POST', url: '/oauth2/sign_out', headers: { 'x-picker': '1' }, cookies: { picker_session: session } });
+  const out = await app.inject(await withCsrf(app, { method: 'POST', url: '/oauth2/sign_out', cookies: { picker_session: session } }));
   assert.deepEqual(out.json(), { next: logoutUrl.href });
   await app.close();
 });
@@ -393,6 +449,7 @@ before(async () => {
   });
 });
 after(() => provider.stop());
+after(() => mock.timers.reset());
 
 async function realApp() {
   const config = baseConfig({ issuer: new URL(provider.issuer.url!) });

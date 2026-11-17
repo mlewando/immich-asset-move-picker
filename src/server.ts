@@ -1,10 +1,14 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import fastifyBasicAuth from '@fastify/basic-auth';
+import fastifyCookie from '@fastify/cookie';
+import fastifyCsrf from '@fastify/csrf-protection';
+import fastifyHelmet from '@fastify/helmet';
 import fastifyStatic from '@fastify/static';
 import Fastify, { LogController, type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
-import { isSafeMethod, registerAuth, type AuthDeps } from './auth.ts';
+import { cookieNaming, isSafeMethod, registerAuth, type AuthDeps } from './auth.ts';
 import type { GuardResult, Immich, MediaKind } from './immich/index.ts';
 import type { Kind, Queue } from './queue.ts';
 import type { Worker } from './worker.ts';
@@ -86,15 +90,47 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
   }) as unknown as FastifyInstance;
 
   // Every request passes these onRequest hooks, in this order, before its route's schema check and
-  // handler: 1. the login (auth.ts; routes marked `config: { public: true }` skip it), 2. X-Picker.
+  // handler: 1. the security headers (helmet), 2. the login (auth.ts; routes marked
+  // `config: { public: true }` skip it), 3. the CSRF token on writes.
   app.decorateRequest('user', null);
-  if (opts.auth) await registerAuth(app, opts.auth);
-  // Every mutating request must carry X-Picker: 1 (a cross-site form post can't set it).
-  app.addHook('onRequest', async (req, reply) => {
-    if (!isSafeMethod(req.method) && req.headers['x-picker'] !== '1') {
-      return reply.code(403).send({ error: 'missing X-Picker header' });
+  // First, so every route uses them, the login routes too: no internals in a 5xx, errors as
+  // { error }.
+  app.setErrorHandler((err: { statusCode?: number; message: string; headers?: Record<string, string> }, req, reply) => {
+    const status = err.statusCode ?? 500;
+    if (err.headers) reply.headers(err.headers); // e.g. Content-Range on a 416 from sendFile
+    if (status >= 500) {
+      req.log.error({ err }, `${req.method} ${req.url} failed`);
+      return reply.code(status).send({ error: 'internal error' }); // no internals to the browser
     }
+    return reply.code(status).send({ error: err.message });
   });
+  app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: 'not found' }));
+  // Signs the login-in-progress and CSRF cookies. With the login on, a key derived from the one in
+  // sessions.db, so a restart doesn't void the open pages' CSRF cookies; else 1 per process.
+  const cookieSecret = opts.auth
+    ? createHash('sha256').update(`picker cookies:${opts.auth.sessions.cookieSecret}`).digest()
+    : randomBytes(32);
+  await app.register(fastifyCookie, { secret: cookieSecret });
+  const { secure, prefix } = cookieNaming(opts.auth?.config.publicUrl);
+  // Defence in depth for the page: only our own scripts/media, plus the 1 inline import map; no
+  // framing, no referrer. upgrade-insecure-requests only when the picker is reached over https:
+  // on plain http (dev, tests) it would send the page's own requests to an https that isn't there.
+  await app.register(fastifyHelmet, {
+    contentSecurityPolicy: { useDefaults: false, directives: { ...cspDirectives(), upgradeInsecureRequests: secure ? [] : null } },
+    referrerPolicy: { policy: 'no-referrer' },
+    // Browsers keep to https for this host for a year (they ignore the header on plain http).
+    strictTransportSecurity: { maxAge: 365 * 24 * 3600, includeSubDomains: true },
+  });
+  if (opts.auth) await registerAuth(app, opts.auth);
+  // Every write carries a token from GET /api/csrf in its csrf-token header, checked against a
+  // secret in a signed cookie. Another site can't read the token, and a cross-origin request
+  // can't set the header without a CORS preflight the picker never allows.
+  await app.register(fastifyCsrf, {
+    cookieKey: `${prefix}picker_csrf`,
+    cookieOpts: { path: '/', httpOnly: true, sameSite: 'strict', secure, signed: true },
+    getToken: (req) => req.headers['csrf-token'] as string | undefined,
+  });
+  app.addHook('onRequest', (req, reply, done) => (isSafeMethod(req.method) ? done() : app.csrfProtection(req, reply, done)));
 
   // Serves the page (public/, no directory listing, files registered at startup) and provides
   // reply.sendFile() for media. Dotfiles (the hard-link step's .picker-*.tmp names) are never
@@ -125,24 +161,6 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
     },
   );
 
-  // Defence in depth for the page: only our own scripts/media, plus the 1 inline import map.
-  const csp = contentSecurityPolicy();
-  app.addHook('onSend', async (_req, reply) => {
-    reply.header('content-security-policy', csp);
-    reply.header('x-content-type-options', 'nosniff');
-    reply.header('referrer-policy', 'no-referrer');
-  });
-
-  app.setErrorHandler((err: { statusCode?: number; message: string; headers?: Record<string, string> }, req, reply) => {
-    const status = err.statusCode ?? 500;
-    if (err.headers) reply.headers(err.headers); // e.g. Content-Range on a 416 from sendFile
-    if (status >= 500) {
-      req.log.error({ err }, `${req.method} ${req.url} failed`);
-      return reply.code(status).send({ error: 'internal error' }); // no internals to the browser
-    }
-    return reply.code(status).send({ error: err.message });
-  });
-  app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: 'not found' }));
 
   // 200 when the DB and Immich are reachable, even when the guard fails (the app stays up,
   // read-only). It names internal errors, so outside dev it needs its own basic auth (probes have
@@ -150,12 +168,25 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
   // The last guard result, or "not checked yet" before the 1st check.
   const guardState = () => deps.guard() ?? { ok: false, problems: ['not checked yet'] };
 
-  const healthzAuth = opts.healthz ? basicAuth(opts.healthz) : [];
-  app.get('/healthz', { config: { public: true }, onRequest: healthzAuth }, async (_req, reply) => {
+  if (opts.healthz) {
+    const digest = (s: string) => createHash('sha256').update(s).digest();
+    const expected = digest(`${opts.healthz.user}:${opts.healthz.password}`);
+    await app.register(fastifyBasicAuth, {
+      // Compared as digests of equal length, in constant time.
+      validate: async (user, password) => {
+        if (!timingSafeEqual(digest(`${user}:${password}`), expected)) throw new Error('unauthorized');
+      },
+      authenticate: { realm: 'picker healthz' },
+    });
+  }
+  app.get('/healthz', { config: { public: true }, onRequest: opts.healthz ? app.basicAuth : [] }, async (_req, reply) => {
     const { db, api: immich } = await deps.immich.ping();
     const { ok, problems } = guardState();
     return reply.code(db === 'ok' && immich === 'ok' ? 200 : 503).send({ db, immich, guard: { ok, problems } });
   });
+
+  // The token every write carries (see the CSRF hook above).
+  app.get('/api/csrf', async (_req, reply) => ({ token: await reply.generateCsrf() }));
 
   // user: who is logged in (null with the login off: then the page shows no sign-out).
   app.get('/api/status', async (req) => {
@@ -328,32 +359,21 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
   return app;
 }
 
-/** A route hook that admits only 1 user and password (HTTP basic auth, compared in constant time). */
-function basicAuth(creds: { user: string; password: string }) {
-  const digest = (s: string) => createHash('sha256').update(s).digest();
-  const expected = digest(`${creds.user}:${creds.password}`);
-  return async (req: FastifyRequest, reply: FastifyReply) => {
-    const m = /^Basic ([A-Za-z0-9+/=]+)$/i.exec(req.headers.authorization ?? '');
-    if (m && timingSafeEqual(digest(Buffer.from(m[1]!, 'base64').toString('utf8')), expected)) return;
-    return reply.code(401).header('www-authenticate', 'Basic realm="picker healthz"').send({ error: 'unauthorized' });
-  };
-}
-
 // script-src allows our files plus the import map in index.html, pinned by its hash.
-function contentSecurityPolicy(): string {
+function cspDirectives() {
   const page = readFileSync(join(PUBLIC_DIR, 'index.html'), 'utf8');
   const importMap = /<script type="importmap">([\s\S]*?)<\/script>/.exec(page)?.[1];
   if (importMap === undefined) throw new Error('public/index.html: import map not found');
   const hash = createHash('sha256').update(importMap).digest('base64');
-  return [
-    "default-src 'none'",
-    `script-src 'self' 'sha256-${hash}'`,
-    "style-src 'self'",
-    "img-src 'self'",
-    "media-src 'self'",
-    "connect-src 'self'",
-    "base-uri 'none'",
-    "form-action 'none'",
-    "frame-ancestors 'none'",
-  ].join('; ');
+  return {
+    defaultSrc: ["'none'"],
+    scriptSrc: ["'self'", `'sha256-${hash}'`],
+    styleSrc: ["'self'"],
+    imgSrc: ["'self'"],
+    mediaSrc: ["'self'"],
+    connectSrc: ["'self'"],
+    baseUri: ["'none'"],
+    formAction: ["'none'"],
+    frameAncestors: ["'none'"],
+  };
 }

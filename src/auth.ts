@@ -1,6 +1,7 @@
 // Login: the picker is an OpenID Connect client of the identity provider (code flow with PKCE,
-// state and nonce, all checked by openid-client). After the login, a server-side session (see
-// sessions.ts) keeps the user in while they work:
+// state and nonce, all checked by openid-client). After the login, a server-side session
+// (@fastify/session, stored by session-store.ts; the provider's tokens apart, in
+// oidc-credentials.ts) keeps the user in while they work:
 // - it ends after PICKER_SESSION_IDLE without a request (the page pings while the user is active),
 //   and in any case MAX_SESSION_MS after the login;
 // - every REFRESH_MS a refresh-token grant re-reads the user from the provider, so a disabled
@@ -9,12 +10,13 @@
 // Background requests (/api/, /media/) without a session get 401, never a login redirect: a grid
 // of hundreds of tiles must not start hundreds of logins. The page reloads once and that 1
 // navigation logs in (public/expiry.js).
-import { randomBytes } from 'node:crypto';
 import { isIP } from 'node:net';
-import fastifyCookie from '@fastify/cookie';
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import fastifySession from '@fastify/session';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import * as client from 'openid-client';
-import type { Identity, Session, Sessions } from './sessions.ts';
+import type { Credentials, CredentialStore, Identity } from './oidc-credentials.ts';
+import { sessionKey } from './session-store.ts';
+import type { Sessions } from './sessions.ts';
 
 export type AuthConfig = {
   issuer: URL;
@@ -135,10 +137,16 @@ export type AuthDeps = {
   config: AuthConfig;
   oidc: Oidc;
   sessions: Sessions;
-  now?: () => number;
 };
 
 declare module 'fastify' {
+  // The session data @fastify/session keeps (session-store.ts). Who the user is and the tokens are
+  // the OIDC credentials (oidc-credentials.ts), found by the session's key.
+  interface Session {
+    sub?: string; // set at the login: a session without it is no login
+    createdAt?: number; // ms since epoch
+    lastSeen?: number; // the user's last activity, written at most every TOUCH_MS
+  }
   interface FastifyRequest {
     // Decorated by buildApp (null with the login off); set by the auth hook.
     user: Identity | null;
@@ -149,7 +157,17 @@ declare module 'fastify' {
   }
 }
 
-/** GET and HEAD change nothing; every other method is a write (and needs X-Picker, server.ts). */
+/**
+ * The picker's cookies over https: Secure, and named with the __Host- prefix (only this exact host
+ * can set them, no planting from a sibling subdomain). Browsers accept the prefix only on Secure
+ * cookies, so plain http (tests, dev) keeps the bare names.
+ */
+export function cookieNaming(publicUrl: URL | undefined) {
+  const secure = publicUrl?.protocol === 'https:';
+  return { secure, prefix: secure ? '__Host-' : '' };
+}
+
+/** GET and HEAD change nothing; every other method is a write (and needs a CSRF token, server.ts). */
 export const isSafeMethod = (method: string) => method === 'GET' || method === 'HEAD';
 
 // An OAuth error with a 5xx (server_error, temporarily_unavailable) or 429 (throttled) means
@@ -163,77 +181,64 @@ const refused = (err: unknown) =>
 const PRUNE_MS = 60 * 60_000;
 
 /**
- * The session rules, apart from cookies and routes: when a session is still good, when it is
- * refreshed at the provider, and when it ends.
+ * The OIDC side of the sessions: when a session's credentials are refreshed at the provider, and
+ * when the provider's answer ends the session.
  */
-function sessionKeeper({ config, oidc, sessions, now, log }: Required<AuthDeps> & { log: FastifyInstance['log'] }) {
+function credentialKeeper({ config, oidc, credentials, log }: { config: AuthConfig; oidc: Oidc; credentials: CredentialStore; log: FastifyInstance['log'] }) {
   const allowed = (groups: string[]) => groups.some((g) => config.allowedGroups.includes(g));
   // 1 refresh per session at a time: the provider rotates the refresh token, and using the old
   // one twice would make it revoke the whole session.
-  const inFlight = new Map<string, Promise<Session | null>>();
+  const inFlight = new Map<string, Promise<Credentials | null>>();
   // After a failed attempt (provider unreachable): not before this time again. refreshedAt can't
   // say this: it moves only on success, and the grace time is measured from it.
   const retryAt = new Map<string, number>();
 
-  const end = (s: Session, why: string): null => {
-    sessions.delete(s.key);
-    retryAt.delete(s.key);
-    log.info({ user: s.email }, `session ended: ${why}`);
+  const end = (c: Credentials, why: string): null => {
+    credentials.delete(c.key);
+    retryAt.delete(c.key);
+    log.info({ user: c.email }, `session ended: ${why}`);
     return null;
   };
 
-  const attemptRefresh = async (s: Session): Promise<Session | null> => {
+  const attemptRefresh = async (c: Credentials): Promise<Credentials | null> => {
     try {
-      const { who, refreshToken } = await oidc.refresh(s.refreshToken, s.sub);
-      retryAt.delete(s.key);
-      if (!allowed(who.groups)) return end(s, 'no longer in an allowed group');
-      return sessions.refreshed(s.key, who, refreshToken, now());
+      const { who, refreshToken } = await oidc.refresh(c.refreshToken, c.sub);
+      retryAt.delete(c.key);
+      if (!allowed(who.groups)) return end(c, 'no longer in an allowed group');
+      return credentials.refreshed(c.key, c.refreshToken, who, refreshToken, Date.now());
     } catch (err) {
-      if (refused(err)) return end(s, `refresh refused (${(err as Error).message})`);
+      if (refused(err)) return end(c, `refresh refused (${(err as Error).message})`);
       // Keep a rotated token; refreshedAt stays, so the grace time still counts.
-      const kept = err instanceof RefreshUnfinished && err.refreshToken ? sessions.refreshed(s.key, s, err.refreshToken, s.refreshedAt) : s;
+      const kept = err instanceof RefreshUnfinished && err.refreshToken ? credentials.refreshed(c.key, c.refreshToken, c, err.refreshToken, c.refreshedAt) : c;
       if (!kept) return null;
-      const t = now();
-      if (t - s.refreshedAt >= REFRESH_MS + REFRESH_GRACE_MS) return end(kept, 'the provider was unreachable for too long');
-      log.warn({ user: s.email, err: (err as Error).message }, 'session refresh failed; trying again later');
-      retryAt.set(s.key, t + RETRY_MS);
+      const t = Date.now();
+      if (t - c.refreshedAt >= REFRESH_MS + REFRESH_GRACE_MS) return end(kept, 'the provider was unreachable for too long');
+      log.warn({ user: c.email, err: (err as Error).message }, 'session refresh failed; trying again later');
+      retryAt.set(c.key, t + RETRY_MS);
       return kept;
     }
   };
-  const refresh = (s: Session): Promise<Session | null> => {
-    let p = inFlight.get(s.key);
+  const refresh = (c: Credentials): Promise<Credentials | null> => {
+    let p = inFlight.get(c.key);
     if (!p) {
-      p = attemptRefresh(s).finally(() => inFlight.delete(s.key));
-      inFlight.set(s.key, p);
+      p = attemptRefresh(c).finally(() => inFlight.delete(c.key));
+      inFlight.set(c.key, p);
     }
     return p;
   };
 
   return {
     allowed,
-    end,
-    /**
-     * The session behind a cookie, if it is still good. `active` = the user did something; a
-     * background poll is not active, so an open but unused tab still goes idle.
-     */
-    async current(cookie: string, active: boolean): Promise<Session | null> {
-      let s = sessions.get(cookie);
-      if (!s) return null;
-      const t = now();
-      if (t - s.lastSeen > config.idleMs) return end(s, 'idle');
-      if (t - s.createdAt > MAX_SESSION_MS) return end(s, 'maximum age');
-      if (t - s.refreshedAt >= REFRESH_MS && (retryAt.get(s.key) ?? 0) <= t) s = await refresh(s);
-      if (s && active && t - s.lastSeen >= TOUCH_MS) {
-        sessions.touch(s.key, t);
-        // The requests that waited on the same refresh share this object: they skip the write.
-        s.lastSeen = t;
-      }
-      return s;
+    /** A session's credentials, refreshed first when due; null when the session must end. */
+    async current(key: string): Promise<Credentials | null> {
+      const c = credentials.get(key);
+      if (!c) return null;
+      const t = Date.now();
+      return t - c.refreshedAt >= REFRESH_MS && (retryAt.get(key) ?? 0) <= t ? refresh(c) : c;
     },
-    /** Idle sessions are deleted on use; this removes the ones never used again. */
+    forget: (key: string) => retryAt.delete(key),
     prune() {
-      const before = now() - config.idleMs;
-      sessions.prune(before);
+      const before = Date.now() - REFRESH_GRACE_MS;
       for (const [key, at] of retryAt) if (at < before) retryAt.delete(key);
     },
   };
@@ -246,24 +251,31 @@ type Login = { state: string; nonce: string; verifier: string; returnTo: string;
 
 export async function registerAuth(app: FastifyInstance, deps: AuthDeps): Promise<void> {
   const { config, oidc, sessions } = deps;
-  const now = deps.now ?? Date.now;
-  const keeper = sessionKeeper({ config, oidc, sessions, now, log: app.log });
+  const keeper = credentialKeeper({ config, oidc, credentials: sessions.credentials, log: app.log });
   const redirectUri = new URL('/oauth2/callback', config.publicUrl).href;
-  const secure = config.publicUrl.protocol === 'https:';
-  // __Host-: only this exact host can set it (no planting from a sibling subdomain). Browsers
-  // accept the prefix only on Secure cookies, so plain http (tests, dev) keeps the bare name.
-  const prefix = secure ? '__Host-' : '';
+  const { secure, prefix } = cookieNaming(config.publicUrl);
   const sessionCookie = `${prefix}picker_session`;
   // 1 cookie per login in progress, named by its state: 2 tabs logging in at once (both reloaded
   // when the session ended) must not overwrite each other's.
   const loginCookie = (state: string) => `${prefix}picker_login_${state}`;
   const cookieOpts = { path: '/', httpOnly: true, secure, sameSite: 'lax' } as const;
 
-  // A login in progress lives in its own cookie, signed with a key that never leaves this process:
+  // The session itself: @fastify/session with our SQLite store. Its cookie lives PICKER_SESSION_IDLE
+  // and is renewed only when the session is saved, i.e. when the user does something (lastSeen,
+  // below), never by a timed poll; an expired session is gone from the store too.
+  await app.register(fastifySession, {
+    secret: sessions.cookieSecret,
+    cookieName: sessionCookie,
+    store: sessions.store,
+    saveUninitialized: false,
+    rolling: false,
+    cookie: { ...cookieOpts, maxAge: config.idleMs },
+  });
+
+  // A login in progress lives in its own cookie, signed (@fastify/cookie, registered in server.ts):
   // nothing kept on the server that a flood of /oauth2/start could fill, and nothing the browser
   // can alter (state, nonce and PKCE verifier are this browser's own; HttpOnly keeps them from
-  // scripts). A restart only fails the logins in progress at that moment.
-  await app.register(fastifyCookie, { secret: randomBytes(32) });
+  // scripts).
   const openLogin = (signed: string): Login | null => {
     const { valid, value } = app.unsignCookie(signed);
     if (!valid || !value) return null;
@@ -274,15 +286,42 @@ export async function registerAuth(app: FastifyInstance, deps: AuthDeps): Promis
     }
   };
 
+  // Best effort, not awaited: the session is gone here either way.
+  const revokeQuietly = (refreshToken: string, req: FastifyRequest) =>
+    void oidc.revoke(refreshToken).catch((err: Error) => req.log.warn({ err: err.message }, 'token revocation failed'));
+
+  const endSession = async (req: FastifyRequest, reply: FastifyReply) => {
+    const key = sessionKey(req.session.sessionStoreId);
+    keeper.forget(key);
+    await req.session.destroy(); // its credentials go with it (ON DELETE CASCADE)
+    reply.clearCookie(sessionCookie, cookieOpts);
+  };
+
+  /** Who is logged in on this request, after the session rules; null: no (more) login. */
+  const loggedIn = async (req: FastifyRequest, reply: FastifyReply): Promise<Identity | null> => {
+    const s = req.session;
+    if (!s?.sub) return null; // never logged in, or idle past PICKER_SESSION_IDLE (the store dropped it)
+    const t = Date.now();
+    if (t - (s.createdAt ?? 0) > MAX_SESSION_MS) {
+      req.log.info({ sub: s.sub }, 'session ended: maximum age');
+      await endSession(req, reply);
+      return null;
+    }
+    const c = await keeper.current(sessionKey(s.sessionStoreId));
+    if (!c || c.sub !== s.sub) {
+      await endSession(req, reply);
+      return null;
+    }
+    // X-Picker-Poll: 1 marks the page's timed polls (status, jobs), which aren't the user's doing.
+    // The change makes @fastify/session save the session, which renews its expiry.
+    if (req.headers['x-picker-poll'] !== '1' && t - (s.lastSeen ?? 0) >= TOUCH_MS) s.lastSeen = t;
+    return { sub: c.sub, email: c.email, name: c.name, groups: c.groups };
+  };
+
   app.addHook('onRequest', async (req, reply) => {
     if (req.routeOptions.config.public) return;
-    const cookie = req.cookies[sessionCookie];
-    // X-Picker-Poll: 1 marks the page's timed polls (status, jobs), which aren't the user's doing.
-    const s = cookie ? await keeper.current(cookie, req.headers['x-picker-poll'] !== '1') : null;
-    if (s) {
-      req.user = { sub: s.sub, email: s.email, name: s.name, groups: s.groups };
-      return;
-    }
+    req.user = await loggedIn(req, reply);
+    if (req.user) return;
     // Only a page load goes to the login. Background requests (fetch, <img>, <video>) and writes
     // get 401: a grid of hundreds of tiles must not start hundreds of logins, and a write can't
     // be replayed after one anyway. The page reloads once instead (public/expiry.js).
@@ -299,7 +338,7 @@ export async function registerAuth(app: FastifyInstance, deps: AuthDeps): Promis
       nonce: client.randomNonce(),
       verifier: client.randomPKCECodeVerifier(),
       returnTo: safeReturn(req.query.rd, config.publicUrl),
-      at: now(),
+      at: Date.now(),
     };
     const url = await oidc.authorizationUrl(redirectUri, {
       state: login.state,
@@ -322,7 +361,7 @@ export async function registerAuth(app: FastifyInstance, deps: AuthDeps): Promis
     const signed = STATE.test(state) ? req.cookies[loginCookie(state)] : undefined;
     const login = signed ? openLogin(signed) : null;
     if (signed) reply.clearCookie(loginCookie(state), cookieOpts);
-    if (!login || login.state !== state || now() - login.at > LOGIN_TTL_MS) return errorPage(reply, 400, 'The login took too long or was started elsewhere.');
+    if (!login || login.state !== state || Date.now() - login.at > LOGIN_TTL_MS) return errorPage(reply, 400, 'The login took too long or was started elsewhere.');
 
     let grant: Grant;
     try {
@@ -341,21 +380,35 @@ export async function registerAuth(app: FastifyInstance, deps: AuthDeps): Promis
       req.log.error('login refused: the provider sent no refresh token (is offline_access granted?)');
       return errorPage(reply, 502, 'The login did not succeed.');
     }
-    const cookie = sessions.create(grant.who, grant.refreshToken, now());
+    // A login over a live one in the same browser: that login's token is revoked and its refresh
+    // state dropped (regenerate keeps the session's store key, so its credentials row is reused).
+    if (req.session?.sub) {
+      const key = sessionKey(req.session.sessionStoreId);
+      const old = sessions.credentials.get(key);
+      keeper.forget(key);
+      if (old) revokeQuietly(old.refreshToken, req);
+    }
+    // A new generation at every login: a cookie planted before it (session fixation) no longer
+    // matches the stored session.
+    await req.session.regenerate();
+    const t = Date.now();
+    req.session.sub = grant.who.sub;
+    req.session.createdAt = t;
+    req.session.lastSeen = t;
+    await req.session.save();
+    sessions.credentials.save(sessionKey(req.session.sessionStoreId), grant.who, grant.refreshToken, t);
     req.log.info({ user: grant.who.email }, 'logged in');
-    reply.setCookie(sessionCookie, cookie, cookieOpts);
     return reply.redirect(login.returnTo);
   });
 
   app.post('/oauth2/sign_out', { config: { public: true } }, async (req, reply) => {
-    const cookie = req.cookies[sessionCookie];
-    const s = cookie ? sessions.get(cookie) : null;
-    if (s) {
-      keeper.end(s, 'signed out');
-      // Best effort, not awaited: the session is gone here either way.
-      void oidc.revoke(s.refreshToken).catch((err: Error) => req.log.warn({ err: err.message }, 'token revocation failed'));
+    const c = req.session?.sub ? sessions.credentials.get(sessionKey(req.session.sessionStoreId)) : null;
+    if (req.session?.sub) await endSession(req, reply);
+    else reply.clearCookie(sessionCookie, cookieOpts);
+    if (c) {
+      req.log.info({ user: c.email }, 'session ended: signed out');
+      revokeQuietly(c.refreshToken, req);
     }
-    reply.clearCookie(sessionCookie, cookieOpts);
     return { next: config.logoutUrl?.href ?? '/signed-out' };
   });
 
@@ -364,7 +417,10 @@ export async function registerAuth(app: FastifyInstance, deps: AuthDeps): Promis
     page(reply, 200, 'You are signed out.', 'Log in again'),
   );
 
-  const prune = setInterval(keeper.prune, PRUNE_MS);
+  const prune = setInterval(() => {
+    sessions.store.prune();
+    keeper.prune();
+  }, PRUNE_MS);
   prune.unref();
   app.addHook('onClose', async () => clearInterval(prune));
 }

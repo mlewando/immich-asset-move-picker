@@ -21,6 +21,8 @@ const valid = {
   PICKER_PUBLIC_URL: 'https://picker.example.org',
   PICKER_HEALTHZ_USER: 'probe',
   PICKER_HEALTHZ_PASSWORD: 'secret-healthz-password',
+  PICKER_TLS_CERT: '/tls/cert.pem',
+  PICKER_TLS_KEY: '/tls/key.pem',
 };
 
 const problemsOf = (env: Record<string, string>): string[] => {
@@ -41,7 +43,7 @@ test('valid env → config with contract defaults', () => {
   assert.deepEqual(c.library.subdirs, ['upload', 'library', 'backups', 'encoded-video']);
   assert.deepEqual(c.auth?.allowedGroups, ['photos-curators', 'admins']);
   assert.equal(c.auth?.idleMs, 30 * 60_000);
-  assert.equal(c.tls, null);
+  assert.deepEqual(c.tls, { certFile: '/tls/cert.pem', keyFile: '/tls/key.pem' });
 });
 
 test('the login is on unless PICKER_AUTH=off', () => {
@@ -82,7 +84,14 @@ test('session idle time and TLS files', () => {
     certFile: '/c.pem',
     keyFile: '/k.pem',
   });
-  assert.deepEqual(problemsOf({ ...valid, PICKER_TLS_CERT: '/c.pem' }), ['PICKER_TLS_CERT and PICKER_TLS_KEY go together']);
+  const { PICKER_TLS_KEY, ...certOnly } = valid;
+  assert.ok(problemsOf(certOnly).includes('PICKER_TLS_CERT and PICKER_TLS_KEY go together'));
+});
+
+test('an https PICKER_PUBLIC_URL needs the picker to serve https itself', () => {
+  const { PICKER_TLS_CERT, PICKER_TLS_KEY, ...plain } = valid;
+  assert.deepEqual(problemsOf(plain), ['PICKER_PUBLIC_URL is https: the picker must serve https itself (PICKER_TLS_CERT, PICKER_TLS_KEY)']);
+  assert.equal(loadConfig({ ...plain, PICKER_PUBLIC_URL: 'http://127.0.0.1:2284' }).tls, null);
 });
 
 test('PICKER_LISTEN accepts host:port and [ipv6]:port', () => {
@@ -92,7 +101,8 @@ test('PICKER_LISTEN accepts host:port and [ipv6]:port', () => {
 
 test('reports every missing variable at once', () => {
   const problems = problemsOf({});
-  for (const name of Object.keys(valid)) {
+  // TLS is optional on its own (only an https PICKER_PUBLIC_URL needs it).
+  for (const name of Object.keys(valid).filter((n) => !n.startsWith('PICKER_TLS_'))) {
     assert.ok(problems.some((p) => p.startsWith(`${name} `)), `no problem reported for ${name}`);
   }
 });
