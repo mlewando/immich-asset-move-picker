@@ -1,10 +1,12 @@
 // Upgrade guard: the picker writes to Immich's DB/files behind its back, so it only runs
-// against the exact Immich version and schema it was tested with. Any mismatch → read-only.
+// against Immich versions and a schema it was tested with. Any mismatch → read-only.
 // The lists below are everything src/immich/ relies on; update them with the queries.
 import type { ImmichApi } from './api.ts';
 import type { Db } from './db.ts';
 
-export const TESTED_IMMICH_VERSION = '3.3.5';
+// Each version tested on its own (integration tests against it), not a semver range: a later
+// patch of an older minor (e.g. 3.3.7) sorts inside "3.3.5 to 3.4.1" but is untested.
+export const SUPPORTED_IMMICH_VERSIONS: readonly string[] = ['3.3.5', '3.3.6', '3.4.0', '3.4.1'];
 
 // Columns the picker reads. information_schema.columns lists only columns the current role has a
 // privilege on, so a missing GRANT shows up here too.
@@ -62,8 +64,8 @@ async function checkVersion(api: Pick<ImmichApi, 'getServerVersion'>, problems: 
   try {
     const v = await api.getServerVersion();
     const actual = `${v.major}.${v.minor}.${v.patch}`;
-    if (actual !== TESTED_IMMICH_VERSION) {
-      problems.push(`Immich version ${actual}, picker tested with ${TESTED_IMMICH_VERSION}`);
+    if (!SUPPORTED_IMMICH_VERSIONS.includes(actual)) {
+      problems.push(`Immich version ${actual} not supported (supported: ${SUPPORTED_IMMICH_VERSIONS.join(', ')})`);
     }
   } catch (err) {
     problems.push(`Immich version check failed: ${(err as Error).message}`);

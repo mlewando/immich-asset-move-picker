@@ -10,7 +10,7 @@ import { openQueue } from '../src/queue.ts';
 import { buildApp, type ServerDeps } from '../src/server.ts';
 import { FAMILY_ID, fakeImmich, fakeWorker, serverDeps, withCsrf } from './fakes.ts';
 
-const failedGuard: GuardResult = { ok: false, problems: ['Immich version 3.4.0, picker tested with 3.3.5'], checkedAt: new Date() };
+const failedGuard: GuardResult = { ok: false, problems: ['Immich version 3.4.2 not supported (supported: 3.3.5, 3.3.6, 3.4.0, 3.4.1)'], checkedAt: new Date() };
 const guardOk = () => ({ ok: true, problems: [], checkedAt: new Date() });
 const ANNA = '00000000-0000-4000-8000-0000000a0001';
 const ASSET = '00000000-0000-4000-8000-00000000a551';

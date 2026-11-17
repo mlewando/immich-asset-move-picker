@@ -1,5 +1,9 @@
-# Throwaway local Immich for development and the integration tests, the version the picker
-# supports. Based on the official v3.3.5 docker-compose.yml. Never point this at real data.
+# Throwaway local Immich for development and the integration tests. Based on the official
+# v3.4.1 docker-compose.yml. Never point this at real data.
+#
+# IMMICH_VERSION picks the Immich version, default the newest supported (keep in step with
+# dev/seed.ts). Immich can't downgrade its database, so switch with npm run dev:reset first,
+# e.g. IMMICH_VERSION=v3.3.5 npm run dev:up.
 #
 #   npm run dev:up      start Immich (http://127.0.0.1:2283), Postgres on 127.0.0.1:55432
 #   npm run dev:seed    users, API keys, test photos, picker DB role → dev/.env.local
@@ -10,7 +14,7 @@ name: immich-picker-dev
 
 services:
   immich-server:
-    image: ghcr.io/immich-app/immich-server:v3.3.5
+    image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-v3.4.1}
     environment:
       DB_HOSTNAME: database
       DB_USERNAME: postgres
@@ -25,14 +29,18 @@ services:
       - ./.data/immich:/data
     ports:
       - "127.0.0.1:2283:2283"
+    # Healthy, not just started: on a fresh volume Postgres refuses connections while it
+    # initializes, and Immich exits on the 1st refused connection.
     depends_on:
-      - redis
-      - database
+      redis:
+        condition: service_healthy
+      database:
+        condition: service_healthy
     healthcheck:
       disable: false
 
   redis:
-    image: docker.io/valkey/valkey:9@sha256:c123e3715db63d06d4ad6964884037aa0d5d4d703939b9929954112889708e1d
+    image: docker.io/valkey/valkey:9@sha256:418652cfb58ef879d4978c33553735d7147016032d5aefaa14c828e611eb9dfd
     healthcheck:
       test: redis-cli ping | grep -q PONG || exit 1
 

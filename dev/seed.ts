@@ -11,7 +11,8 @@ const DATA = join(DEV, '.data');
 const FIXTURES = join(DATA, 'fixtures');
 const COMPOSE = ['compose', '-f', join(DEV, 'compose.yml')];
 const API = 'http://127.0.0.1:2283/api';
-const IMMICH_IMAGE = 'ghcr.io/immich-app/immich-server:v3.3.5';
+// Same version and default as dev/compose.yml.
+const IMMICH_IMAGE = `ghcr.io/immich-app/immich-server:${process.env.IMMICH_VERSION || 'v3.4.1'}`;
 const PASSWORD = 'password123';
 const PICKER_DB = { user: 'immich_picker', password: 'picker-dev' };
 
@@ -138,6 +139,13 @@ async function seedSpecialCases(token: string): Promise<void> {
   await upload(token, { file: 'live-still.jpg', at }, { livePhotoVideoId: motion.id });
 
   const edited = await upload(token, { file: 'photo-5.jpg', at: '2026-07-02T11:01:00Z' });
+  // Immich refuses edits until its metadata job has read the dimensions (a fresh upload races it).
+  for (let i = 0; ; i++) {
+    const a = await api<{ width?: number | null; height?: number | null }>('GET', `/assets/${edited.id}`, { token });
+    if (a.width && a.height) break;
+    if (i === 60) throw new Error('photo-5.jpg: no dimensions after 30 s');
+    await new Promise((r) => setTimeout(r, 500));
+  }
   await api('PUT', `/assets/${edited.id}/edits`, {
     token,
     body: { edits: [{ action: 'rotate', parameters: { angle: 90 } }] },

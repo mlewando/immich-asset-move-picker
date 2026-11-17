@@ -67,7 +67,7 @@ export type Immich = {
   deleteFromFamily(familyAssetIds: string[]): Promise<void>;
 
   // --- Health
-  /** Upgrade guard: exact Immich version, schema and grants. */
+  /** Upgrade guard: supported Immich version, schema and grants. */
   check(): Promise<GuardResult>;
   /** Reachability of Immich's database and API: 'ok' or 'error: …'. */
   ping(): Promise<{ db: string; api: string }>;

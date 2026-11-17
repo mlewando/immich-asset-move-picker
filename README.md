@@ -11,11 +11,13 @@ copy is deleted. Live photos and stacks move as a whole.
 
 Nothing is ever deleted that has no other copy, and every step can be resumed after a failure.
 
-> Works only with **Immich v3.3.5**. It writes to Immich's database and library directly, so on
-> any other version (or schema) it stays read-only until it has been tested and updated.
+> Works only with **Immich v3.3.5 to v3.4.1**, i.e. exactly v3.3.5, v3.3.6, v3.4.0 and v3.4.1.
+> It writes to Immich's database and library directly, so on any other version (or schema) it
+> stays read-only until it has been tested and updated. Each release's notes repeat its range.
 
 ## Requirements
-- **Immich v3.3.5**, with the library reachable as files.
+- **Immich v3.3.5 to v3.4.1** (v3.3.5, v3.3.6, v3.4.0, v3.4.1), with the library reachable as
+  files.
 - An **API key of the family account** with the permissions `asset.upload`, `asset.update`,
   `asset.delete`, `stack.create` and `user.read`.
 - A **Postgres role** in Immich's database with the grants in [`dev/picker-db.sql`](dev/picker-db.sql):
@@ -85,8 +87,8 @@ copies are filed into their folders (the app reminds you).
 linked because they differ) and `immich_picker_last_write_timestamp_seconds`.
 
 ## Development
-Needs Node 24 and Docker. Everything runs against a throwaway local Immich v3.3.5 with test
-users (`anna`, `bob`, `family-photos`, password `password123`).
+Needs Node 24 and Docker. Everything runs against a throwaway local Immich (v3.4.1, the newest
+supported) with test users (`anna`, `bob`, `family-photos`, password `password123`).
 ```sh
 npm install
 npm run dev:up      # start the local Immich: http://127.0.0.1:2283
@@ -97,6 +99,9 @@ npm test            # unit tests
 npm run test:int    # integration tests against the local Immich
 npm run dev:reset   # wipe the local Immich
 ```
+To test another supported Immich version, start over with it (Immich can't downgrade its
+database): `npm run dev:reset`, then `export IMMICH_VERSION=v3.3.5`, `npm run dev:up`,
+`npm run dev:seed`, `npm run test:int`.
 `npm run dev:app` runs without a login. To try the real one, a local Authelia (the homelab's
 version, the same picker client and group policy) runs next to Immich:
 ```sh
@@ -115,7 +120,8 @@ the changes since the previous release and the image's digest.
 
 **Code layout:** `src/immich/` is the only code that knows Immich (its API, database schema, file
 layout and the upgrade guard) behind 1 interface, `src/immich/index.ts`. Supporting a new Immich
-version means changing that folder and its tests. The rest: `src/queue.ts` (job queue),
+version means checking its changes against that folder, passing `npm run test:int` against it,
+and adding it to `SUPPORTED_IMMICH_VERSIONS` in `src/immich/guard.ts` and to the range above. The rest: `src/queue.ts` (job queue),
 `src/worker.ts` (move and give-back steps), `src/server.ts` (HTTP API), `src/auth.ts` (OIDC
 login; sessions by `@fastify/session` with the SQLite store in `src/session-store.ts`, the
 provider's tokens apart in `src/oidc-credentials.ts`), `public/` (the page,

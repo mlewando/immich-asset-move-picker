@@ -3,17 +3,24 @@ import { test } from 'node:test';
 import { checkGuard } from '../src/immich/guard.ts';
 import { fakeApi, fakeDb, healthySchema } from './fakes.ts';
 
-test('tested version + expected schema → ok', async () => {
-  const r = await checkGuard({ api: fakeApi(), db: fakeDb() });
-  assert.deepEqual(r.problems, []);
-  assert.equal(r.ok, true);
-});
+for (const [major, minor, patch] of [[3, 3, 5], [3, 3, 6], [3, 4, 0], [3, 4, 1]]) {
+  test(`supported version ${major}.${minor}.${patch} + expected schema → ok`, async () => {
+    const r = await checkGuard({ api: fakeApi({ major: major!, minor: minor!, patch: patch! }), db: fakeDb() });
+    assert.deepEqual(r.problems, []);
+    assert.equal(r.ok, true);
+  });
+}
 
-test('other Immich version → not ok', async () => {
-  const r = await checkGuard({ api: fakeApi({ major: 3, minor: 4, patch: 0 }), db: fakeDb() });
-  assert.equal(r.ok, false);
-  assert.deepEqual(r.problems, ['Immich version 3.4.0, picker tested with 3.3.5']);
-});
+// 3.3.7 sorts inside the supported range but was never tested.
+for (const [major, minor, patch] of [[3, 3, 4], [3, 3, 7], [3, 4, 2], [3, 5, 0]]) {
+  test(`unsupported version ${major}.${minor}.${patch} → not ok`, async () => {
+    const r = await checkGuard({ api: fakeApi({ major: major!, minor: minor!, patch: patch! }), db: fakeDb() });
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.problems, [
+      `Immich version ${major}.${minor}.${patch} not supported (supported: 3.3.5, 3.3.6, 3.4.0, 3.4.1)`,
+    ]);
+  });
+}
 
 test('Immich unreachable → not ok', async () => {
   const r = await checkGuard({ api: fakeApi(new Error('fetch failed')), db: fakeDb() });

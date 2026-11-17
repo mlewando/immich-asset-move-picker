@@ -154,7 +154,7 @@ export function carriedMetadata(src: Pick<SourceAsset, 'exif' | 'edited'>): Meta
   return patch;
 }
 
-// "Edited in Immich", verified on v3.3.5: an edit locks the properties, a job then writes them to
+// "Edited in Immich", verified on v3.3.5 to v3.4.1: an edit locks the properties, a job then writes them to
 // an XMP sidecar and unlocks them again. So: has a sidecar, or still has locked properties (an
 // edit whose sidecar job hasn't run yet). Needs alias a (asset) and e (its asset_exif).
 const EDITED_SQL = `(EXISTS (SELECT 1 FROM public.asset_file f WHERE f."assetId" = a.id AND f.type = 'sidecar')
