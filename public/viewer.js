@@ -5,7 +5,7 @@ import htm from 'htm';
 import { media } from './api.js';
 import { MediaBadges, StatusBadges } from './grid.js';
 import { CheckCircle, Icon } from './icons.js';
-import { session } from './session.js';
+import { expiry } from './expiry.js';
 
 const html = htm.bind(h);
 
@@ -44,11 +44,11 @@ export function Viewer({ items, index, selected, isSelectable, onClose, onNav, o
   const fit = 'max-h-full max-w-full object-contain';
   let body;
   if (item.type === 'video') {
-    body = html`<video key=${item.id} class=${fit} src=${media.video(item.id)} poster=${media.preview(item.id)} controls autoplay onError=${session.check} />`;
+    body = html`<video key=${item.id} class=${fit} src=${media.video(item.id)} poster=${media.preview(item.id)} controls autoplay onError=${expiry.check} />`;
   } else if (item.livePhotoVideoId && playLive) {
-    body = html`<video key=${`live-${item.id}`} class=${fit} src=${media.video(item.livePhotoVideoId)} autoplay muted onEnded=${() => setPlayLive(false)} onError=${session.check} />`;
+    body = html`<video key=${`live-${item.id}`} class=${fit} src=${media.video(item.livePhotoVideoId)} autoplay muted onEnded=${() => setPlayLive(false)} onError=${expiry.check} />`;
   } else {
-    body = html`<img key=${item.id} class=${fit} src=${media.preview(item.id)} alt=${item.fileName} onError=${session.check} />`;
+    body = html`<img key=${item.id} class=${fit} src=${media.preview(item.id)} alt=${item.fileName} onError=${expiry.check} />`;
   }
 
   return html`

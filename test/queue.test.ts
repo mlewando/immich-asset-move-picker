@@ -11,21 +11,21 @@ const M = 'member-1';
 
 test('enqueue: 1 unfinished move per asset; a finished one can be queued again', () => {
   const q = openQueue(':memory:');
-  assert.deepEqual(q.enqueue(M, ['a', 'b'], 'curator@x'), ['a', 'b']);
-  assert.deepEqual(q.enqueue(M, ['a', 'c'], null), ['c'], 'a is pending already');
+  assert.deepEqual(q.enqueue('move', ['a', 'b'], { memberId: M, requestedBy: 'curator@x' }), ['a', 'b']);
+  assert.deepEqual(q.enqueue('move', ['a', 'c'], { memberId: M }), ['c'], 'a is pending already');
   const a = q.claimNext()!;
   assert.equal(a.sourceAssetId, 'a');
   q.fail(a.id, 'boom');
-  assert.deepEqual(q.enqueue(M, ['a'], null), [], 'failed counts as unfinished (Retry it instead)');
+  assert.deepEqual(q.enqueue('move', ['a'], { memberId: M }), [], 'failed counts as unfinished (Retry it instead)');
   q.retry(a.id);
   q.claimNext();
   q.advance(a.id, { step: 'archived', done: true });
-  assert.deepEqual(q.enqueue(M, ['a'], null), ['a'], 'done → may move again (after a Give back)');
+  assert.deepEqual(q.enqueue('move', ['a'], { memberId: M }), ['a'], 'done → may move again (after a Give back)');
 });
 
 test('claimNext: oldest pending first, marks it running; null when empty', () => {
   const q = openQueue(':memory:');
-  q.enqueue(M, ['a', 'b'], null);
+  q.enqueue('move', ['a', 'b'], { memberId: M });
   assert.equal(q.claimNext()!.sourceAssetId, 'a');
   assert.equal(q.claimNext()!.sourceAssetId, 'b');
   assert.equal(q.claimNext(), null);
@@ -34,7 +34,7 @@ test('claimNext: oldest pending first, marks it running; null when empty', () =>
 
 test('advance records step and copy; fail/retry; failed list', () => {
   const q = openQueue(':memory:');
-  q.enqueue(M, ['a', 'b'], null);
+  q.enqueue('move', ['a', 'b'], { memberId: M });
   const a = q.claimNext()!;
   q.advance(a.id, { step: 'copied', familyAssetId: 'fam-a', originals: ['a', 'a2'] });
   q.fail(a.id, 'asset is in the trash');
@@ -61,7 +61,7 @@ test('counters and the oldest pending move persist across a reopen', () => {
     assert.equal(q.counter('link_mismatch'), 0);
     assert.equal(q.oldestPendingAt(), null);
     q.bump('link_mismatch', 2);
-    q.enqueue(M, ['a', 'b'], null);
+    q.enqueue('move', ['a', 'b'], { memberId: M });
     const oldest = q.oldestPendingAt();
     assert.match(oldest!, /^\d{4}-\d{2}-\d{2}T/);
     q.close();
@@ -90,8 +90,8 @@ test('a queue file from a newer picker is refused, not changed', () => {
 
 test('kinds are counted apart', () => {
   const q = openQueue(':memory:');
-  q.enqueue(M, ['a'], null);
-  q.enqueue(null, ['f'], null, 'giveback');
+  q.enqueue('move', ['a'], { memberId: M });
+  q.enqueue('giveback', ['f']);
   assert.equal(q.counts().pending, 2);
   assert.equal(q.counts('move').pending, 1);
   const first = q.claimNext()!;
@@ -104,7 +104,7 @@ test('survives a restart: running moves go back to pending with their step', () 
   try {
     const path = join(dir, 'queue.db');
     let q = openQueue(path);
-    q.enqueue(M, ['a'], null);
+    q.enqueue('move', ['a'], { memberId: M });
     const a = q.claimNext()!;
     q.advance(a.id, { step: 'copied', familyAssetId: 'fam-a' });
     q.close(); // "crash" mid-move

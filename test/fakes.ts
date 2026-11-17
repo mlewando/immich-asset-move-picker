@@ -2,11 +2,13 @@
 //   - fakeImmich: the app-facing Immich interface (src/immich/index.ts), backed by plain data.
 //   - fakeDb / fakeApi: internals of src/immich/, for the guard's unit tests. The fake DB answers
 //     the guard's queries from an in-memory picture of the schema, which tests mutate.
+import type { FastifyInstance, InjectOptions } from 'fastify';
 import type { ImmichApi, ServerVersion } from '../src/immich/api.ts';
 import type { Db } from '../src/immich/db.ts';
 import { EXPECTED_COLUMNS, EXPECTED_ENUMS, EXPECTED_WRITES } from '../src/immich/guard.ts';
 import type { Album, GridItem, MediaKind, Member } from '../src/immich/index.ts';
-import type { ServerImmich } from '../src/server.ts';
+import { openQueue } from '../src/queue.ts';
+import type { ServerDeps, ServerImmich } from '../src/server.ts';
 
 export const FAMILY_ID = '00000000-0000-4000-8000-00000000fa01';
 
@@ -96,5 +98,32 @@ export function fakeApi(version: ServerVersion | Error = { major: 3, minor: 3, p
       if (version instanceof Error) throw version;
       return version;
     },
+  };
+}
+
+export function fakeWorker() {
+  let kicks = 0;
+  return { kick: () => void kicks++, state: () => ({ running: false, paused: false, pausedReason: [] as string[] }), kicks: () => kicks };
+}
+
+/** Healthy server deps (no guard check yet, empty queue), with `over` replacing any of them. */
+export const serverDeps = (over: Partial<ServerDeps> = {}): ServerDeps => ({
+  immich: fakeImmich(),
+  guard: () => undefined,
+  queue: openQueue(':memory:'),
+  worker: fakeWorker(),
+  ...over,
+});
+
+/** A write as the page sends it: with the token and cookie GET /api/csrf hands out. */
+export async function withCsrf(app: FastifyInstance, req: InjectOptions): Promise<InjectOptions> {
+  const cookies = (req.cookies ?? {}) as Record<string, string>;
+  const res = await app.inject({ url: '/api/csrf', cookies });
+  const secret = res.cookies.find((c) => c.name.endsWith('picker_csrf'));
+  if (!secret) throw new Error(`no CSRF cookie (GET /api/csrf → ${res.statusCode})`);
+  return {
+    ...req,
+    headers: { ...req.headers, 'csrf-token': (res.json() as { token: string }).token },
+    cookies: { ...cookies, [secret.name]: secret.value },
   };
 }

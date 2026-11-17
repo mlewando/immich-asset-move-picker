@@ -28,6 +28,8 @@ export async function runMove(deps: JobDeps, job: Job): Promise<void> {
     originals = copy.originals;
     deps.queue.advance(job.id, { step, familyAssetId: copy.familyAssetId, originals });
   }
+  // `originals` is recorded together with 'copied', so it is set from here on. The fallback (just
+  // the asset itself) only covers a row advanced without it, as the resume tests do.
   if (step === 'copied') {
     // 'unchanged' is fine: archived by an earlier run whose step wasn't recorded.
     const results = await deps.immich.archive(originals ?? [job.sourceAssetId]);
@@ -67,6 +69,7 @@ export async function runGiveBack(deps: JobDeps, job: Job): Promise<void> {
     deps.queue.advance(job.id, { step, originals: plan.originals, familyIds });
   }
   if (step === 'restored') {
+    // `familyIds` is recorded together with 'restored'; without it, only the family asset itself.
     await deps.immich.deleteFromFamily(familyIds ?? [job.sourceAssetId]);
     step = 'deleted';
     deps.queue.advance(job.id, { step, done: true });

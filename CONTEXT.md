@@ -10,8 +10,9 @@ source.
 _Avoid_: shared account
 
 **Curator**:
-The person allowed to move photos into the family account (access is controlled by the auth
-proxy in front of the app).
+The person allowed to move photos into the family account (a member of the allowed groups at the
+OpenID Connect provider). In the login code (`req.user`, `user` in log lines) "user" is the
+logged-in curator, as the OIDC libraries call it.
 _Avoid_: admin
 
 **Picker**:

@@ -6,7 +6,8 @@ import htm from 'htm';
 import { api } from './api.js';
 import { Grid } from './grid.js';
 import { Icon } from './icons.js';
-import { MovesIndicator, StorageTemplateReminder, useMoves } from './moves.js';
+import { keepAlive } from './expiry.js';
+import { JobsIndicator, StorageTemplateReminder, useJobs } from './jobs.js';
 import { addRange, toggleDay, toggleOne } from './selection.js';
 import { Viewer } from './viewer.js';
 
@@ -94,7 +95,31 @@ function NavItem({ href, active, children }) {
   >${children}</a>`;
 }
 
-function Sidebar({ members, route }) {
+// Who is logged in, and the way out. Without the login (local dev) there is no user: nothing shown.
+function Account({ user }) {
+  const [busy, setBusy] = useState(false);
+  if (!user) return null;
+  const signOut = async () => {
+    setBusy(true);
+    try {
+      const { next } = await api.signOut();
+      location.assign(next);
+    } catch {
+      setBusy(false);
+    }
+  };
+  return html`
+    <div class="flex items-center gap-2 border-t border-white/5 px-2.5 pt-3">
+      <span class="min-w-0 flex-1 truncate text-xs text-neutral-400" title=${user}>${user}</span>
+      <button
+        class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-300 hover:bg-white/10 disabled:opacity-40"
+        onClick=${signOut}
+        disabled=${busy}
+      ><${Icon} name="logout" class="size-4" />Sign out</button>
+    </div>`;
+}
+
+function Sidebar({ members, route, user }) {
   const label = 'px-2.5 pb-1 pt-4 text-[11px] font-semibold uppercase tracking-wider text-neutral-500';
   return html`
     <aside class="sticky top-0 flex h-screen w-64 shrink-0 flex-col border-r border-white/5 bg-neutral-900/50 px-2 py-3">
@@ -121,11 +146,12 @@ function Sidebar({ members, route }) {
           <span class="font-medium">Family account</span>
         </${NavItem}>
       </nav>
+      <${Account} user=${user} />
     </aside>`;
 }
 
 // --- top bar: title + zoom, or the selection actions -----------------------------------------
-function TopBar({ title, count, selectedCount, action, tileSize, setTileSize, onClear, moves }) {
+function TopBar({ title, count, selectedCount, action, tileSize, setTileSize, onClear, jobs }) {
   const iconBtn = 'grid size-9 place-items-center rounded-full text-neutral-300 hover:bg-white/10 disabled:opacity-30';
   const bar = 'sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-white/5 px-4 backdrop-blur';
   if (selectedCount > 0) {
@@ -133,7 +159,7 @@ function TopBar({ title, count, selectedCount, action, tileSize, setTileSize, on
       <header class=${`${bar} bg-sky-950/80`}>
         <button class=${iconBtn} onClick=${onClear} aria-label="Clear selection" title="Clear selection"><${Icon} name="close" /></button>
         <span class="flex-1 text-sm font-medium">${selectedCount} selected</span>
-        ${moves}
+        ${jobs}
         <button
           class="rounded-full bg-sky-500 px-4 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-sky-400 disabled:opacity-40 disabled:hover:bg-sky-500"
           disabled=${action.disabled}
@@ -148,7 +174,7 @@ function TopBar({ title, count, selectedCount, action, tileSize, setTileSize, on
         <span class="text-[15px] font-semibold">${title}</span>
         ${count !== null && html`<span class="ml-2 text-sm text-neutral-500">${count} items · drag to select, Alt+drag to unselect</span>`}
       </div>
-      ${moves}
+      ${jobs}
       <div class="flex items-center gap-1" title="Thumbnail size">
         <button class=${iconBtn} onClick=${() => setTileSize(tileSize - ZOOM.step)} disabled=${tileSize <= ZOOM.min} aria-label="Smaller thumbnails"><${Icon} name="zoomOut" /></button>
         <input
@@ -196,22 +222,71 @@ function FilterBar({ albums, filter, onChange }) {
 }
 
 // --- app -----------------------------------------------------------------------------------
+const STATUS_POLL_MS = 10_000; // the read-only state (the guard runs at start and before each job)
+const TOAST_MS = 6000;
+
+/**
+ * The grid's photos and the selection in them. Another grid (member, filter, family) starts
+ * empty; reload() refreshes in place and keeps the selection of what is still there.
+ */
+function useGrid(route) {
+  const gridKey = route.kind === 'none' ? '' : gridPath(route);
+  const [items, setItems] = useState(null); // null = loading
+  const [error, setError] = useState(null);
+  const [selected, setSelected] = useState(() => new Set());
+  const anchor = useRef(null); // flat index of the last single select (shift-click range start)
+  // opts.poll: a reload the jobs poll started is not the user's doing (it must not keep an
+  // unused tab's session alive); the user's own actions ping on their own (expiry.js).
+  const load = useCallback(
+    (opts) => (route.kind === 'family' ? api.familyAssets(opts) : api.memberAssets(route.id, route.filter, opts)),
+    [gridKey],
+  );
+
+  useEffect(() => {
+    if (!gridKey) return;
+    setItems(null);
+    setError(null);
+    setSelected(new Set());
+    anchor.current = null;
+    load().then(setItems, (e) => setError(e.message));
+  }, [gridKey]);
+
+  const reload = useCallback(() => {
+    if (!gridKey) return;
+    load({ poll: true }).then((next) => {
+      setItems(next);
+      const ids = new Set(next.map((i) => i.id));
+      setSelected((s) => new Set([...s].filter((id) => ids.has(id))));
+    }, () => {});
+  }, [gridKey, load]);
+
+  return { gridKey, items, error, setError, selected, setSelected, anchor, reload };
+}
+
+/** A short message at the bottom ({ kind: 'ok' | 'warn' | 'error', text }), gone after TOAST_MS. */
+function useToast() {
+  const [toast, setToast] = useState(null);
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), TOAST_MS);
+    return () => clearTimeout(t);
+  }, [toast]);
+  return [toast, setToast];
+}
+
 function App() {
   const route = useRoute();
   const [status, setStatus] = useState(null);
   const [members, setMembers] = useState([]);
-  const [items, setItems] = useState(null); // null = loading
-  const [error, setError] = useState(null);
-  const [selected, setSelected] = useState(() => new Set());
   const [tileSize, setTileSize] = useTileSize();
-  const anchor = useRef(null); // flat index of the last single select (shift-click range start)
+  const { gridKey, items, error, setError, selected, setSelected, anchor, reload } = useGrid(route);
+  const [toast, setToast] = useToast();
 
   useEffect(() => {
     api.members().then(setMembers, (e) => setError(e.message));
-    // The guard runs at server start and before each move: keep the read-only state current.
-    const loadStatus = () => api.status().then(setStatus, () => {});
+    const loadStatus = () => api.status({ poll: true }).then(setStatus, () => {});
     loadStatus();
-    const t = setInterval(loadStatus, 10_000);
+    const t = setInterval(loadStatus, STATUS_POLL_MS);
     return () => clearInterval(t);
   }, []);
 
@@ -219,12 +294,6 @@ function App() {
   useEffect(() => {
     if (route.kind === 'none' && members.length) navigate(`/members/${members[0].id}`, { replace: true });
   }, [route.kind, members]);
-
-  const gridKey = route.kind === 'none' ? '' : gridPath(route);
-  const loadGrid = useCallback(
-    () => (route.kind === 'family' ? api.familyAssets() : api.memberAssets(route.id, route.filter)),
-    [gridKey],
-  );
 
   // The member's albums, for the filter.
   const [albums, setAlbums] = useState([]);
@@ -234,39 +303,19 @@ function App() {
     if (memberId) api.memberAlbums(memberId).then(setAlbums, () => {});
   }, [memberId]);
   const onFilter = useCallback((filter) => navigate(gridPath({ ...route, filter }), { replace: true }), [gridKey]);
-  useEffect(() => {
-    if (!gridKey) return;
-    setItems(null);
-    setError(null);
-    setSelected(new Set());
-    anchor.current = null;
-    loadGrid().then(setItems, (e) => setError(e.message));
-  }, [gridKey]);
 
-  // Moves finished → refresh the grid in place (moved originals leave a member's timeline,
-  // copies join the family one); keep the selection of what is still there.
+  // Jobs finished → refresh the grid in place (moved originals leave a member's timeline, copies
+  // join the family one).
   const [movedCount, setMovedCount] = useState(0);
-  const { summary, refresh: refreshMoves } = useMoves(
+  const { summary, refresh: refreshJobs } = useJobs(
     useCallback(
-      (n, moves) => {
+      (_done, moves) => {
         if (moves > 0) setMovedCount((c) => c + moves);
-        if (!gridKey) return;
-        loadGrid().then((next) => {
-          setItems(next);
-          const ids = new Set(next.map((i) => i.id));
-          setSelected((s) => new Set([...s].filter((id) => ids.has(id))));
-        }, () => {});
+        reload();
       },
-      [gridKey, loadGrid],
+      [reload],
     ),
   );
-
-  const [toast, setToast] = useState(null);
-  useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(null), 6000);
-    return () => clearTimeout(t);
-  }, [toast]);
 
   // Family grid: only assets with an original can be given back. Member grid: anything
   // (a live photo moves with its video, a stack whole).
@@ -281,15 +330,15 @@ function App() {
     try {
       const r = route.kind === 'family' ? await api.giveBack(ids) : await api.move(route.id, ids);
       setSelected(new Set());
-      // What can't be moved shows up as failed in the moves indicator (the worker decides).
+      // What can't be moved shows up as failed in the jobs indicator (the worker decides).
       const parts = [`${r.queued} queued`];
       if (r.alreadyQueued) parts.push(`${r.alreadyQueued} already queued`);
       setToast({ kind: 'ok', text: parts.join(' · ') });
-      refreshMoves();
+      refreshJobs();
     } catch (e) {
       setToast({ kind: 'error', text: e.message });
     }
-  }, [selected, route.kind, route.id, refreshMoves]);
+  }, [selected, route.kind, route.id, refreshJobs]);
   const action = {
     label: route.kind === 'family' ? 'Give back' : 'Move to family',
     disabled: readOnly,
@@ -301,8 +350,8 @@ function App() {
     run: runSelected,
   };
   const onRetry = useCallback(
-    (id) => api.retryMove(id).then(refreshMoves, (e) => setToast({ kind: 'error', text: e.message })),
-    [refreshMoves],
+    (id) => api.retryJob(id).then(refreshJobs, (e) => setToast({ kind: 'error', text: e.message })),
+    [refreshJobs],
   );
 
   const onSelect = useCallback(
@@ -343,7 +392,7 @@ function App() {
 
   return html`
     <div class="flex min-h-screen">
-      <${Sidebar} members=${members} route=${route} />
+      <${Sidebar} members=${members} route=${route} user=${status?.user} />
       <div class="min-w-0 flex-1">
         <${TopBar}
           title=${title}
@@ -353,7 +402,7 @@ function App() {
           tileSize=${tileSize}
           setTileSize=${setTileSize}
           onClear=${() => setSelected(new Set())}
-          moves=${html`<${MovesIndicator} summary=${summary} onRetry=${onRetry} />`}
+          jobs=${html`<${JobsIndicator} summary=${summary} onRetry=${onRetry} />`}
         />
         ${route.kind === 'member' && html`<${FilterBar} albums=${albums} filter=${route.filter} onChange=${onFilter} />`}
         <${StorageTemplateReminder} count=${movedCount} onDismiss=${() => setMovedCount(0)} />
@@ -399,4 +448,5 @@ function App() {
   `;
 }
 
+keepAlive();
 render(html`<${App} />`, document.getElementById('app'));

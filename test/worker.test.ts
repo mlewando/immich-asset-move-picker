@@ -80,7 +80,7 @@ function setup(assets: Record<string, string>, units: Record<string, string[]> =
   return { queue, ...im, deps: { queue, immich: im.immich } };
 }
 const claim = (q: Queue, id: string) => {
-  q.enqueue(MEMBER, [id], null);
+  q.enqueue('move', [id], { memberId: MEMBER });
   return q.claimNext()!;
 };
 const row = (q: Queue) => {
@@ -173,7 +173,7 @@ test("archive refused (member trashed it meanwhile) → Immich's reason", async 
 
 test('worker: drains in order; a refused move is recorded failed, the rest continue', async () => {
   const s = setup({ a: 'timeline', b: 'archive', c: 'timeline' });
-  s.queue.enqueue(MEMBER, ['a', 'b', 'c'], null);
+  s.queue.enqueue('move', ['a', 'b', 'c'], { memberId: MEMBER });
   let guardCalls = 0;
   const wk = createWorker({ ...s.deps, guard: async () => (guardCalls++, ok), log: silent });
   wk.kick();
@@ -186,7 +186,7 @@ test('worker: drains in order; a refused move is recorded failed, the rest conti
 
 test('worker: a failed guard pauses it, nothing is claimed', async () => {
   const s = setup({ a: 'timeline' });
-  s.queue.enqueue(MEMBER, ['a'], null);
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER });
   const wk = createWorker({ ...s.deps, guard: async () => bad, log: silent });
   wk.kick();
   await wk.idle();
@@ -196,10 +196,10 @@ test('worker: a failed guard pauses it, nothing is claimed', async () => {
 
 test('worker: a kick during a drain is not lost', async () => {
   const s = setup({ a: 'timeline', b: 'timeline' });
-  s.queue.enqueue(MEMBER, ['a'], null);
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER });
   const wk = createWorker({ ...s.deps, guard: async () => ok, log: silent });
   wk.kick();
-  s.queue.enqueue(MEMBER, ['b'], null); // while the 1st drain runs
+  s.queue.enqueue('move', ['b'], { memberId: MEMBER }); // while the 1st drain runs
   wk.kick();
   await wk.idle();
   assert.equal(s.queue.counts().done, 2);
@@ -207,7 +207,7 @@ test('worker: a kick during a drain is not lost', async () => {
 
 test('worker: retry puts a failed move back and it completes', async () => {
   const s = setup({ a: 'timeline' });
-  s.queue.enqueue(MEMBER, ['a'], null);
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER });
   s.failNext.copyToFamily = new Error('Immich POST /assets → HTTP 502');
   const wk = createWorker({ ...s.deps, guard: async () => ok, log: silent });
   wk.kick();
@@ -222,7 +222,7 @@ test('worker: retry puts a failed move back and it completes', async () => {
 
 // --- give back -----------------------------------------------------------------------------------
 const claimGiveBack = (q: Queue, id: string) => {
-  q.enqueue(null, [id], null, 'giveback');
+  q.enqueue('giveback', [id]);
   return q.claimNext()!;
 };
 
@@ -264,8 +264,8 @@ test('give back: a failed delete resumes with the recorded family files (no new 
 test('worker: runs moves and give backs from the same queue', async () => {
   const s = setup({ a: 'timeline', o: 'archive' });
   s.plans.f = { familyIds: ['f'], originals: ['o'] };
-  s.queue.enqueue(MEMBER, ['a'], null);
-  s.queue.enqueue(null, ['f'], null, 'giveback');
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER });
+  s.queue.enqueue('giveback', ['f']);
   const wk = createWorker({ ...s.deps, guard: async () => ok, log: silent });
   wk.kick();
   await wk.idle();

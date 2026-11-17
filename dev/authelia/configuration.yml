@@ -1,0 +1,70 @@
+# Local Authelia for trying the picker's real login (npm run dev:auth). Shaped like the homelab
+# one (same version, same picker client and policy) but 1 factor and dev-only secrets. The secrets
+# come from dev/.data/authelia (made by dev/auth.ts) through *_FILE variables, so none are here.
+server:
+  address: 'tcp://:9091/'
+  tls:
+    certificate: '/data/tls/public.crt'
+    key: '/data/tls/private.pem'
+
+log:
+  level: 'info'
+
+authentication_backend:
+  file:
+    path: '/data/users.yml'
+
+# Nothing sits behind Authelia's forward auth here; the picker's own policy is below.
+access_control:
+  default_policy: 'deny'
+  rules:
+    - domain: 'auth.localhost'
+      policy: 'one_factor'
+
+session:
+  cookies:
+    - domain: 'auth.localhost'
+      authelia_url: 'https://auth.localhost:9091'
+      # Short, so an expired provider session can be tried without waiting hours.
+      expiration: '1h'
+      inactivity: '30m'
+
+storage:
+  local:
+    path: '/data/db.sqlite3'
+
+# Password-reset and device mails land in this file instead of being sent.
+notifier:
+  filesystem:
+    filename: '/data/notification.txt'
+
+identity_providers:
+  oidc:
+    jwks:
+      - key_id: 'dev'
+        algorithm: 'RS256'
+        use: 'sig'
+        key: {{ secret "/data/oidc/private.pem" | mindent 10 "|" | msquote }}
+    authorization_policies:
+      # As on the homelab: only photos-curators get past Authelia to the picker at all.
+      photos-curators:
+        default_policy: 'deny'
+        rules:
+          - policy: 'one_factor'
+            subject: 'group:photos-curators'
+    clients:
+      - client_id: 'picker'
+        client_name: 'Photo picker (dev)'
+        client_secret: {{ secret "/data/secrets/picker_client_secret_digest" | msquote }}
+        public: false
+        authorization_policy: 'photos-curators'
+        require_pkce: true
+        pkce_challenge_method: 'S256'
+        consent_mode: 'pre-configured'
+        pre_configured_consent_duration: '3 months'
+        token_endpoint_auth_method: 'client_secret_basic'
+        redirect_uris:
+          - 'http://127.0.0.1:2284/oauth2/callback'
+        scopes: ['openid', 'profile', 'email', 'groups', 'offline_access']
+        grant_types: ['authorization_code', 'refresh_token']
+        response_types: ['code']

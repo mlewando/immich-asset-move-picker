@@ -40,8 +40,17 @@ const json = async <T>(path: string, init?: RequestInit): Promise<{ status: numb
   const res = await fetch(`${base}${path}`, init);
   return { status: res.status, body: (await res.json()) as T };
 };
-const post = (path: string, body: unknown) =>
-  json(path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-picker': '1' }, body: JSON.stringify(body) });
+// A write as the page sends it: the CSRF token from GET /api/csrf, with its cookie.
+let csrf: { token: string; cookie: string } | undefined;
+const writeHeaders = async () => {
+  if (!csrf) {
+    const res = await fetch(`${base}/api/csrf`);
+    csrf = { cookie: res.headers.getSetCookie()[0]!.split(';')[0]!, token: ((await res.json()) as { token: string }).token };
+  }
+  return { 'content-type': 'application/json', 'csrf-token': csrf.token, cookie: csrf.cookie };
+};
+const post = async (path: string, body: unknown) =>
+  json(path, { method: 'POST', headers: await writeHeaders(), body: JSON.stringify(body) });
 
 const asset = async (id: string) =>
   (await db.query<{ visibility: string; checksum: Buffer; localDateTime: Date }>(
@@ -124,7 +133,7 @@ test("bytes only in the family account's trash → refused, original untouched (
     const annaShared = await annaAsset('shared.jpg');
     await post('/api/moves', { memberId: anna.id, assetIds: [annaShared] });
     await worker.idle();
-    const { failed } = (await json<{ failed: { sourceAssetId: string; error: string }[] }>('/api/moves')).body;
+    const { failed } = (await json<{ failed: { sourceAssetId: string; error: string }[] }>('/api/jobs')).body;
     assert.equal(failed.find((f) => f.sourceAssetId === annaShared)?.error, 'the family account has shared.jpg in its trash: restore it or empty the trash, then Retry');
     assert.equal((await asset(annaShared)).visibility, 'timeline');
   } finally {
@@ -140,7 +149,7 @@ test('move 3 photos: queued, done, originals archived, copies in the family time
   assert.deepEqual(res.body, { queued: 3, alreadyQueued: 0 });
 
   await worker.idle();
-  const summary = (await json<{ done: number; failed: { sourceAssetId: string }[] }>('/api/moves')).body;
+  const summary = (await json<{ done: number; failed: { sourceAssetId: string }[] }>('/api/jobs')).body;
   assert.deepEqual([summary.done, summary.failed.filter((f) => ids.includes(f.sourceAssetId))], [3, []]);
 
   for (const i of Object.values(moved)) assert.equal((await asset(i.id)).visibility, 'archive', i.fileName);
@@ -179,7 +188,7 @@ test("what can't move is queued, then fails with Immich's reason; nothing writte
   const res = await post('/api/moves', { memberId: anna.id, assetIds: [nonPrimary, archived.id] });
   assert.deepEqual(res.body, { queued: 2, alreadyQueued: 0 });
   await worker.idle();
-  const { failed } = (await json<{ failed: { sourceAssetId: string; fileName: string; step: string; error: string }[] }>('/api/moves')).body;
+  const { failed } = (await json<{ failed: { sourceAssetId: string; fileName: string; step: string; error: string }[] }>('/api/jobs')).body;
   const byId = new Map(failed.map((f) => [f.sourceAssetId, f]));
   assert.deepEqual(byId.get(nonPrimary), { ...byId.get(nonPrimary)!, fileName: 'burst-2.jpg', step: 'queued', error: 'part of a stack: move the stack by its primary photo' });
   assert.equal(byId.get(archived.id)!.error, "asset is not on the member's timeline (it is archive)");
@@ -252,7 +261,7 @@ test('give back: photo, live photo and stack return to the member; family copies
   };
 
   const res = await json<{ queued: number }>('/api/givebacks', {
-    method: 'POST', headers: { 'content-type': 'application/json', 'x-picker': '1' },
+    method: 'POST', headers: await writeHeaders(),
     body: JSON.stringify({ assetIds: [familyIds.photo10, familyIds.still, familyIds.burst[0]] }),
   });
   assert.deepEqual(res.body, { queued: 3, alreadyQueued: 0 });
@@ -273,11 +282,11 @@ test('give back: photo, live photo and stack return to the member; family copies
 test("give back without an original (family-only.jpg) fails with the reason; nothing deleted", async () => {
   const [famOnly] = await db.query<{ id: string }>(`SELECT id FROM asset WHERE "ownerId" = $1 AND "originalFileName" = 'family-only.jpg' AND "deletedAt" IS NULL`, [familyId]);
   await json('/api/givebacks', {
-    method: 'POST', headers: { 'content-type': 'application/json', 'x-picker': '1' },
+    method: 'POST', headers: await writeHeaders(),
     body: JSON.stringify({ assetIds: [famOnly!.id] }),
   });
   await worker.idle();
-  const { failed } = (await json<{ failed: { sourceAssetId: string; kind: string; error: string }[] }>('/api/moves')).body;
+  const { failed } = (await json<{ failed: { sourceAssetId: string; kind: string; error: string }[] }>('/api/jobs')).body;
   const f = failed.find((x) => x.sourceAssetId === famOnly!.id)!;
   assert.deepEqual([f.kind, f.error], ['giveback', "no original of family-only.jpg in any member's account: giving it back would delete its only copy"]);
   assert.equal((await asset(famOnly!.id)).visibility, 'timeline');

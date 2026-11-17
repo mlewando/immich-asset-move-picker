@@ -23,12 +23,22 @@ Nothing is ever deleted that has no other copy, and every step can be resumed af
   in Immich's database.
 - The Immich **library mounted read-write as 1 mount** (hard links don't work across mounts), and
   Immich's thumbnails directory (read-only is enough).
-- An **authenticating reverse proxy** in front: the app has no login of its own. It logs the
-  user from `X-Forwarded-Email` when present. Mark `^/media/` and `^/api/` as API routes so an
-  expired session answers those with `401` instead of a login redirect (oauth2-proxy:
-  `api_routes = ["^/media/", "^/api/"]`). The page then reloads once and only that top-level load
-  logs in; otherwise every open thumbnail starts its own login and the identity provider may
-  rate-limit them.
+- An **OpenID Connect provider** (e.g. Authelia): the picker is its client and logs users in
+  itself, no auth proxy needed. Register a confidential client with:
+  - redirect URI `<PICKER_PUBLIC_URL>/oauth2/callback`;
+  - scopes `openid profile email groups offline_access`, with `email` and `groups` available
+    from UserInfo;
+  - grant types `authorization_code` and `refresh_token`, PKCE `S256`, and
+    `client_secret_basic`.
+
+  Only members of `PICKER_OIDC_ALLOWED_GROUPS` get in, and only with a refresh token. A session
+  lasts as long as the user is active: it ends after `PICKER_SESSION_IDLE` without a request, and
+  at the latest 12 hours after the login. Every 5 minutes a refresh re-reads the user from the
+  provider, so someone disabled or removed from the groups is out within 5 minutes; if the
+  provider stays unreachable for 30 minutes past that, the session ends too. Sign out (in the
+  sidebar) ends the session and revokes its refresh token; the provider's own session ends only if
+  `PICKER_OIDC_LOGOUT_URL` sends the browser to its logout page, else the next visit logs
+  straight back in.
 
 ## Running
 ```sh
@@ -40,8 +50,9 @@ docker run -d --name immich-picker --network host \
   -v /var/lib/picker:/var/lib/picker \
   ghcr.io/mlewando/immich-asset-move-picker:<version>
 ```
-Then open `http://127.0.0.1:2284` through your proxy. `GET /healthz` returns 200 when the database
-and Immich are reachable.
+Then open `PICKER_PUBLIC_URL`. `GET /healthz` returns 200 when the database and Immich are
+reachable. It needs no login session but HTTP basic auth (`PICKER_HEALTHZ_USER`/`_PASSWORD`),
+because it names internal errors.
 
 | Variable | Meaning |
 |---|---|
@@ -51,9 +62,18 @@ and Immich are reachable.
 | `PICKER_LIBRARY_MOUNT` | where the library is mounted, e.g. `/library` |
 | `PICKER_LIBRARY_SUBDIRS` | library subdirectories, e.g. `upload,library,backups,encoded-video` (Immich's `/data/<subdir>/…` → `<mount>/<subdir>/…`) |
 | `PICKER_THUMBS_DIR` | Immich's thumbnails directory (default `/data/thumbs`) |
-| `PICKER_DATA_DIR` | the app's own state, a small SQLite job queue; no backup needed |
+| `PICKER_DATA_DIR` | the app's own state: the SQLite job queue and login sessions; no backup needed |
 | `PICKER_METRICS_DIR` | where to write `immich_picker.prom` |
 | `PICKER_LISTEN` | default `127.0.0.1:2284` |
+| `PICKER_PUBLIC_URL` | where browsers reach the picker, e.g. `https://picker.example.org` |
+| `PICKER_OIDC_ISSUER` | the provider's issuer URL, e.g. `https://auth.example.org` |
+| `PICKER_OIDC_CLIENT_ID` `PICKER_OIDC_CLIENT_SECRET` | the picker's client at the provider |
+| `PICKER_OIDC_ALLOWED_GROUPS` | comma-separated; a user must be in at least 1 |
+| `PICKER_SESSION_IDLE` | idle time that ends a session, default `30m` (`s`/`m`/`h`); a change applies to logins after it |
+| `PICKER_OIDC_LOGOUT_URL` | optional, https: where Sign out sends the browser next, the provider's logout page (Authelia: `https://auth.example.org/logout?rd=<encoded PICKER_PUBLIC_URL/signed-out>`); default the picker's own signed-out page |
+| `PICKER_HEALTHZ_USER` `PICKER_HEALTHZ_PASSWORD` | basic auth for `/healthz`; required unless `PICKER_AUTH=off` |
+| `PICKER_TLS_CERT` `PICKER_TLS_KEY` | PEM files: serve HTTPS (read on start; restart after renewal). Required when `PICKER_PUBLIC_URL` is https: the session cookie is then Secure and is set only on HTTPS requests |
+| `PICKER_AUTH` | `off` disables the login (local development only; needs a loopback `PICKER_LISTEN`); `off-any-host` also allows other listen addresses (a dev container); default `oidc` |
 
 After moving, run *Administration → Jobs → Storage Template Migration* in Immich so the family
 copies are filed into their folders (the app reminds you).
@@ -77,6 +97,14 @@ npm test            # unit tests
 npm run test:int    # integration tests against the local Immich
 npm run dev:reset   # wipe the local Immich
 ```
+`npm run dev:app` runs without a login. To try the real one, a local Authelia (the homelab's
+version, the same picker client and group policy) runs next to Immich:
+```sh
+npm run dev:auth      # Authelia on https://auth.localhost:9091 (users curator, outsider)
+npm run dev:app:auth  # the app on http://127.0.0.1:2284, login on
+```
+The browser warns once about Authelia's certificate (a local CA in `dev/.data/authelia/tls`).
+`curator` gets in; `outsider` is not in `photos-curators`, so Authelia refuses it.
 Node runs the TypeScript sources directly; the only build step is the page's CSS (Tailwind).
 
 CI type-checks, runs the unit tests and builds the image on every push and pull request. To
@@ -88,5 +116,7 @@ the changes since the previous release and the image's digest.
 **Code layout:** `src/immich/` is the only code that knows Immich (its API, database schema, file
 layout and the upgrade guard) behind 1 interface, `src/immich/index.ts`. Supporting a new Immich
 version means changing that folder and its tests. The rest: `src/queue.ts` (job queue),
-`src/worker.ts` (move and give-back steps), `src/server.ts` (HTTP API), `public/` (the page,
+`src/worker.ts` (move and give-back steps), `src/server.ts` (HTTP API), `src/auth.ts` (OIDC
+login; sessions by `@fastify/session` with the SQLite store in `src/session-store.ts`, the
+provider's tokens apart in `src/oidc-credentials.ts`), `public/` (the page,
 Preact + htm).
