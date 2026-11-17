@@ -4,6 +4,7 @@
 #   npm run dev:up      start Immich (http://127.0.0.1:2283), Postgres on 127.0.0.1:55432
 #   npm run dev:seed    users, API keys, test photos, picker DB role → dev/.env.local
 #   npm run dev:app     run the picker natively against it (or: npm run dev:app:container)
+#   npm run dev:auth    also a local Authelia, then npm run dev:app:auth (the picker, login on)
 #   npm run dev:down    stop; npm run dev:reset also wipes all data
 name: immich-picker-dev
 
@@ -81,6 +82,25 @@ services:
       - "127.0.0.1:2284:2284"
     depends_on:
       - immich-server
+
+  # The real login (npm run dev:auth writes its secrets, certificate and users first). Shaped like
+  # the homelab Authelia: same version, same picker client and group policy.
+  authelia:
+    profiles: [auth]
+    image: docker.io/authelia/authelia:4.39.20
+    environment:
+      X_AUTHELIA_CONFIG_FILTERS: template
+      AUTHELIA_SESSION_SECRET_FILE: /data/secrets/session_secret
+      AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /data/secrets/storage_encryption_key
+      AUTHELIA_IDENTITY_PROVIDERS_OIDC_HMAC_SECRET_FILE: /data/secrets/oidc_hmac_secret
+      AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE: /data/secrets/reset_password_jwt_secret
+    volumes:
+      - ./authelia/configuration.yml:/config/configuration.yml:ro
+      - ./.data/authelia:/data
+    # auth.localhost resolves to both: the browser and Node may try either.
+    ports:
+      - "127.0.0.1:9091:9091"
+      - "[::1]:9091:9091"
 
 volumes:
   pgdata:

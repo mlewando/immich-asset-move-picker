@@ -24,6 +24,9 @@ export type AuthConfig = {
   publicUrl: URL;
   allowedGroups: string[];
   idleMs: number;
+  // Where the browser goes after signing out of the picker: the provider's logout page, so its own
+  // session ends too (else the next visit logs straight back in). null: the picker's own page.
+  logoutUrl: URL | null;
 };
 
 export type Grant = { who: Identity; refreshToken: string | null };
@@ -353,8 +356,13 @@ export async function registerAuth(app: FastifyInstance, deps: AuthDeps): Promis
       void oidc.revoke(s.refreshToken).catch((err: Error) => req.log.warn({ err: err.message }, 'token revocation failed'));
     }
     reply.clearCookie(sessionCookie, cookieOpts);
-    return reply.code(204).send();
+    return { next: config.logoutUrl?.href ?? '/signed-out' };
   });
+
+  // A page, not a redirect to the login: going back to / would log straight back in.
+  app.get('/signed-out', { config: { public: true } }, async (_req, reply) =>
+    page(reply, 200, 'You are signed out.', 'Log in again'),
+  );
 
   const prune = setInterval(keeper.prune, PRUNE_MS);
   prune.unref();
@@ -374,12 +382,13 @@ export function safeReturn(returnTo: string | undefined, publicUrl: URL): string
   return u && u.origin === publicUrl.origin ? u.href : home;
 }
 
-function errorPage(reply: FastifyReply, status: number, message: string) {
+function page(reply: FastifyReply, status: number, message: string, link: string) {
   return reply
     .code(status)
     .type('text/html; charset=utf-8')
-    .send(`<!doctype html><title>Photo picker</title><p>${escapeHtml(message)} <a href="/">Try again</a></p>`);
+    .send(`<!doctype html><title>Photo picker</title><p>${escapeHtml(message)} <a href="/">${link}</a></p>`);
 }
+const errorPage = (reply: FastifyReply, status: number, message: string) => page(reply, status, message, 'Try again');
 
 const escapeHtml = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);

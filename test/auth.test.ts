@@ -34,6 +34,7 @@ const baseConfig = (over: Partial<AuthConfig> = {}): AuthConfig => ({
   publicUrl: new URL(HOME),
   allowedGroups: ['photos-curators'],
   idleMs: 30 * MIN,
+  logoutUrl: null,
   ...over,
 });
 
@@ -355,14 +356,28 @@ test('session: an unreachable provider is retried each minute, and ends it after
   await app.close();
 });
 
-test('sign out ends the session and revokes its refresh token', async () => {
+test('sign out ends the session, revokes its refresh token, and names where to go next', async () => {
   const f = fakeOidc();
   const { app, status, login } = await makeApp(f.oidc);
   const { session } = await login();
+  const me = await app.inject({ url: '/api/status', cookies: { picker_session: session } });
+  assert.equal(me.json().user, 'anna@example.org');
   const out = await app.inject({ method: 'POST', url: '/oauth2/sign_out', headers: { 'x-picker': '1' }, cookies: { picker_session: session } });
-  assert.equal(out.statusCode, 204);
+  assert.deepEqual(out.json(), { next: '/signed-out' });
   assert.equal(await status(session), 401);
   assert.deepEqual(f.revoked, ['rt-1']);
+  const page = await app.inject('/signed-out');
+  assert.equal(page.statusCode, 200, 'the signed-out page needs no login');
+  assert.match(page.body, /signed out/);
+  await app.close();
+});
+
+test("sign out: with PICKER_OIDC_LOGOUT_URL the browser goes on to the provider's logout", async () => {
+  const logoutUrl = new URL('https://auth.test/logout?rd=https%3A%2F%2Fpicker.test%2Fsigned-out');
+  const { app, login } = await makeApp(fakeOidc().oidc, baseConfig({ logoutUrl }));
+  const { session } = await login();
+  const out = await app.inject({ method: 'POST', url: '/oauth2/sign_out', headers: { 'x-picker': '1' }, cookies: { picker_session: session } });
+  assert.deepEqual(out.json(), { next: logoutUrl.href });
   await app.close();
 });
 

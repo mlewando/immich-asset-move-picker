@@ -95,7 +95,31 @@ function NavItem({ href, active, children }) {
   >${children}</a>`;
 }
 
-function Sidebar({ members, route }) {
+// Who is logged in, and the way out. Without the login (local dev) there is no user: nothing shown.
+function Account({ user }) {
+  const [busy, setBusy] = useState(false);
+  if (!user) return null;
+  const signOut = async () => {
+    setBusy(true);
+    try {
+      const { next } = await api.signOut();
+      location.assign(next);
+    } catch {
+      setBusy(false);
+    }
+  };
+  return html`
+    <div class="flex items-center gap-2 border-t border-white/5 px-2.5 pt-3">
+      <span class="min-w-0 flex-1 truncate text-xs text-neutral-400" title=${user}>${user}</span>
+      <button
+        class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-300 hover:bg-white/10 disabled:opacity-40"
+        onClick=${signOut}
+        disabled=${busy}
+      ><${Icon} name="logout" class="size-4" />Sign out</button>
+    </div>`;
+}
+
+function Sidebar({ members, route, user }) {
   const label = 'px-2.5 pb-1 pt-4 text-[11px] font-semibold uppercase tracking-wider text-neutral-500';
   return html`
     <aside class="sticky top-0 flex h-screen w-64 shrink-0 flex-col border-r border-white/5 bg-neutral-900/50 px-2 py-3">
@@ -122,6 +146,7 @@ function Sidebar({ members, route }) {
           <span class="font-medium">Family account</span>
         </${NavItem}>
       </nav>
+      <${Account} user=${user} />
     </aside>`;
 }
 
@@ -367,7 +392,7 @@ function App() {
 
   return html`
     <div class="flex min-h-screen">
-      <${Sidebar} members=${members} route=${route} />
+      <${Sidebar} members=${members} route=${route} user=${status?.user} />
       <div class="min-w-0 flex-1">
         <${TopBar}
           title=${title}

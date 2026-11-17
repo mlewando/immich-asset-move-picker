@@ -35,7 +35,10 @@ Nothing is ever deleted that has no other copy, and every step can be resumed af
   lasts as long as the user is active: it ends after `PICKER_SESSION_IDLE` without a request, and
   at the latest 12 hours after the login. Every 5 minutes a refresh re-reads the user from the
   provider, so someone disabled or removed from the groups is out within 5 minutes; if the
-  provider stays unreachable for 30 minutes past that, the session ends too.
+  provider stays unreachable for 30 minutes past that, the session ends too. Sign out (in the
+  sidebar) ends the session and revokes its refresh token; the provider's own session ends only if
+  `PICKER_OIDC_LOGOUT_URL` sends the browser to its logout page, else the next visit logs
+  straight back in.
 
 ## Running
 ```sh
@@ -67,6 +70,7 @@ because it names internal errors.
 | `PICKER_OIDC_CLIENT_ID` `PICKER_OIDC_CLIENT_SECRET` | the picker's client at the provider |
 | `PICKER_OIDC_ALLOWED_GROUPS` | comma-separated; a user must be in at least 1 |
 | `PICKER_SESSION_IDLE` | idle time that ends a session, default `30m` (`s`/`m`/`h`) |
+| `PICKER_OIDC_LOGOUT_URL` | optional, https: where Sign out sends the browser next, the provider's logout page (Authelia: `https://auth.example.org/logout?rd=<encoded PICKER_PUBLIC_URL/signed-out>`); default the picker's own signed-out page |
 | `PICKER_HEALTHZ_USER` `PICKER_HEALTHZ_PASSWORD` | basic auth for `/healthz`; required unless `PICKER_AUTH=off` |
 | `PICKER_TLS_CERT` `PICKER_TLS_KEY` | optional PEM files: serve HTTPS (read on start; restart after renewal) |
 | `PICKER_AUTH` | `off` disables the login (local development only; needs a loopback `PICKER_LISTEN`); `off-any-host` also allows other listen addresses (a dev container); default `oidc` |
@@ -93,6 +97,14 @@ npm test            # unit tests
 npm run test:int    # integration tests against the local Immich
 npm run dev:reset   # wipe the local Immich
 ```
+`npm run dev:app` runs without a login. To try the real one, a local Authelia (the homelab's
+version, the same picker client and group policy) runs next to Immich:
+```sh
+npm run dev:auth      # Authelia on https://auth.localhost:9091 (users curator, outsider)
+npm run dev:app:auth  # the app on http://127.0.0.1:2284, login on
+```
+The browser warns once about Authelia's certificate (a local CA in `dev/.data/authelia/tls`).
+`curator` gets in; `outsider` is not in `photos-curators`, so Authelia refuses it.
 Node runs the TypeScript sources directly; the only build step is the page's CSS (Tailwind).
 
 CI type-checks, runs the unit tests and builds the image on every push and pull request. To

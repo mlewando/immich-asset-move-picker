@@ -131,7 +131,12 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     const clientSecret = required('PICKER_OIDC_CLIENT_SECRET');
     const allowedGroups = list('PICKER_OIDC_ALLOWED_GROUPS', 'group');
     const idleMs = duration('PICKER_SESSION_IDLE', '30m');
-    if (issuer && publicUrl) auth = { issuer, publicUrl, clientId, clientSecret, allowedGroups, idleMs };
+    const logoutRaw = env.PICKER_OIDC_LOGOUT_URL?.trim();
+    const logoutUrl = logoutRaw ? URL.parse(logoutRaw) : null;
+    if (logoutRaw && logoutUrl?.protocol !== 'https:' && !(logoutUrl && isLoopback(logoutUrl.hostname))) {
+      problems.push('PICKER_OIDC_LOGOUT_URL must be an https URL');
+    }
+    if (issuer && publicUrl) auth = { issuer, publicUrl, clientId, clientSecret, allowedGroups, idleMs, logoutUrl };
   }
 
   // /healthz has no login session (probes call it), so it gets its own basic-auth credentials.

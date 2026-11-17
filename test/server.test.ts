@@ -106,8 +106,9 @@ test('status reports read-only mode from the guard', async () => {
   assert.deepEqual((await call({ guard: () => failedGuard }, '/api/status')).json(), {
     readOnly: true,
     problems: failedGuard.problems,
+    user: null,
   });
-  assert.deepEqual((await call({ guard: guardOk }, '/api/status')).json(), { readOnly: false, problems: [] });
+  assert.deepEqual((await call({ guard: guardOk }, '/api/status')).json(), { readOnly: false, problems: [], user: null });
 });
 
 test('mutating request: 403 without X-Picker: 1, else routed normally', async () => {

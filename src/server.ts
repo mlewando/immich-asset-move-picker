@@ -157,9 +157,10 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
     return reply.code(db === 'ok' && immich === 'ok' ? 200 : 503).send({ db, immich, guard: { ok, problems } });
   });
 
-  app.get('/api/status', async () => {
+  // user: who is logged in (null with the login off: then the page shows no sign-out).
+  app.get('/api/status', async (req) => {
     const { ok, problems } = guardState();
-    return { readOnly: !ok, problems };
+    return { readOnly: !ok, problems, user: req.user?.email ?? null };
   });
 
   app.get('/api/members', { schema: { response: { 200: { type: 'array', items: memberSchema } } } }, async () =>

@@ -68,6 +68,13 @@ test('PICKER_PUBLIC_URL must be https except on loopback', () => {
   assert.ok(loadConfig({ ...valid, PICKER_PUBLIC_URL: 'http://127.0.0.1:2284' }).auth);
 });
 
+test('PICKER_OIDC_LOGOUT_URL is optional and https', () => {
+  assert.equal(loadConfig(valid).auth?.logoutUrl, null);
+  assert.equal(loadConfig({ ...valid, PICKER_OIDC_LOGOUT_URL: 'https://auth.example.org/logout' }).auth?.logoutUrl?.href, 'https://auth.example.org/logout');
+  assert.deepEqual(problemsOf({ ...valid, PICKER_OIDC_LOGOUT_URL: 'http://auth.example.org/logout' }), ['PICKER_OIDC_LOGOUT_URL must be an https URL']);
+  assert.deepEqual(problemsOf({ ...valid, PICKER_OIDC_LOGOUT_URL: 'nope' }), ['PICKER_OIDC_LOGOUT_URL must be an https URL']);
+});
+
 test('session idle time and TLS files', () => {
   assert.equal(loadConfig({ ...valid, PICKER_SESSION_IDLE: '2h' }).auth?.idleMs, 2 * 3_600_000);
   assert.deepEqual(problemsOf({ ...valid, PICKER_SESSION_IDLE: '30' }), ['PICKER_SESSION_IDLE must be a duration like 30m']);

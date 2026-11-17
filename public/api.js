@@ -35,6 +35,8 @@ export const api = {
   move: (memberId, assetIds) => request('POST', '/api/moves', { memberId, assetIds }),
   giveBack: (assetIds) => request('POST', '/api/givebacks', { assetIds }),
   retryJob: (id) => request('POST', `/api/jobs/${id}/retry`),
+  // → { next }: where the browser goes now (the provider's logout, or the signed-out page).
+  signOut: () => request('POST', '/oauth2/sign_out'),
 };
 
 export const media = {
