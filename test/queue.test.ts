@@ -53,6 +53,22 @@ test('advance records step and copy; fail/retry; failed list', () => {
   assert.equal(q.failed().length, 0);
 });
 
+test('unfinishedAssetIds: per kind, pending/running/failed, with recorded originals and family ids', () => {
+  const q = openQueue(':memory:');
+  q.enqueue('move', ['a', 'b', 'c'], { memberId: M });
+  q.enqueue('giveback', ['f']);
+  const a = q.claimNext()!;
+  q.advance(a.id, { step: 'copied', familyAssetId: 'fam-a', originals: ['a', 'a2'] });
+  q.fail(a.id, 'boom');
+  const b = q.claimNext()!;
+  q.advance(b.id, { step: 'linked', done: true });
+  q.claimNext(); // c: running
+  assert.deepEqual([...q.unfinishedAssetIds('move')].sort(), ['a', 'a2', 'c'], 'done b left out; failed a with its stack');
+  const f = q.claimNext()!;
+  q.advance(f.id, { step: 'restored', originals: ['o1'], familyIds: ['f', 'f2'] });
+  assert.deepEqual([...q.unfinishedAssetIds('giveback')].sort(), ['f', 'f2', 'o1']);
+});
+
 test('counters and the oldest pending move persist across a reopen', () => {
   const dir = mkdtempSync(join(tmpdir(), 'picker-queue-'));
   try {

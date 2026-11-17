@@ -231,6 +231,33 @@ test('family timeline', async () => {
   assert.deepEqual(res.json(), [{ ...item(ASSET), noOrigin: true }]);
 });
 
+test('timelines leave out assets with an unfinished job of their kind; back once it is done', async () => {
+  const OTHER = '00000000-0000-4000-8000-00000000a552';
+  const immich = fakeImmich({
+    members: [{ id: ANNA, name: 'Anna', email: 'a@x' }],
+    timelines: { [ANNA]: [item(ASSET), item(OTHER)], [FAMILY_ID]: [item(ASSET), item(OTHER)] },
+  });
+  const queue = openQueue(':memory:');
+  const ids = async (url: string) => (await call({ immich, queue }, url)).json<GridItem[]>().map((i) => i.id);
+  queue.enqueue('move', [ASSET], { memberId: ANNA });
+  assert.deepEqual(await ids(`/api/members/${ANNA}/assets`), [OTHER], 'pending move hidden');
+  assert.deepEqual(await ids('/api/family/assets'), [ASSET, OTHER], 'a move does not hide family assets');
+
+  const move = queue.claimNext()!;
+  queue.fail(move.id, 'boom');
+  assert.deepEqual(await ids(`/api/members/${ANNA}/assets`), [OTHER], 'failed move still hidden');
+
+  queue.enqueue('giveback', [OTHER]);
+  assert.deepEqual(await ids('/api/family/assets'), [ASSET], 'pending give back hidden');
+  queue.retry(move.id);
+  queue.claimNext(); // the move, again
+  queue.advance(move.id, { step: 'linked', done: true });
+  const giveback = queue.claimNext()!;
+  queue.advance(giveback.id, { step: 'deleted', done: true });
+  assert.deepEqual(await ids(`/api/members/${ANNA}/assets`), [ASSET, OTHER], 'done → shown (if Immich still lists it)');
+  assert.deepEqual(await ids('/api/family/assets'), [ASSET, OTHER]);
+});
+
 test('Immich down → 500 without internals', async () => {
   const res = await call({ immich: fakeImmich({ down: new Error('connect ECONNREFUSED 127.0.0.1:2283') }) }, '/api/family/assets');
   assert.equal(res.statusCode, 500);

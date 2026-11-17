@@ -9,7 +9,7 @@ import fastifyHelmet from '@fastify/helmet';
 import fastifyStatic from '@fastify/static';
 import Fastify, { LogController, type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { cookieNaming, isSafeMethod, registerAuth, type AuthDeps } from './auth.ts';
-import type { GuardResult, Immich, MediaKind } from './immich/index.ts';
+import type { GridItem, GuardResult, Immich, MediaKind } from './immich/index.ts';
 import type { Kind, Queue } from './queue.ts';
 import type { Worker } from './worker.ts';
 
@@ -23,7 +23,7 @@ export type ServerDeps = {
   immich: ServerImmich;
   // Last guard result (checked on start and before each job).
   guard: () => GuardResult | undefined;
-  queue: Pick<Queue, 'enqueue' | 'retry' | 'counts' | 'failed'>;
+  queue: Pick<Queue, 'enqueue' | 'retry' | 'counts' | 'failed' | 'unfinishedAssetIds'>;
   worker: Pick<Worker, 'kick' | 'state'>;
 };
 
@@ -202,6 +202,14 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
 
   const day = { type: 'string', format: 'date' } as const; // YYYY-MM-DD
 
+  // An asset with an unfinished job stays out of the grids until the job is done: a move archives
+  // the original only a few steps in, and a failed job is retried from the jobs list, not picked
+  // again.
+  const withoutQueued = (items: GridItem[], kind: Kind) => {
+    const busy = deps.queue.unfinishedAssetIds(kind);
+    return busy.size ? items.filter((i) => !busy.has(i.id)) : items;
+  };
+
   app.get<{ Params: { id: string }; Querystring: { album?: string; from?: string; to?: string } }>(
     '/api/members/:id/assets',
     {
@@ -218,7 +226,7 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
     async (req, reply) => {
       if (!(await isMember(req.params.id))) return reply.code(404).send({ error: 'no such member' });
       const { album, from, to } = req.query;
-      return deps.immich.memberTimeline(req.params.id, { albumId: album, from, to });
+      return withoutQueued(await deps.immich.memberTimeline(req.params.id, { albumId: album, from, to }), 'move');
     },
   );
 
@@ -249,7 +257,7 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
   app.get(
     '/api/family/assets',
     { schema: { response: { 200: { type: 'array', items: gridItemSchema } } } },
-    async () => deps.immich.familyTimeline(),
+    async () => withoutQueued(await deps.immich.familyTimeline(), 'giveback'),
   );
 
   // --- Move to family and Give back: 1 queue of jobs -----------------------------------------

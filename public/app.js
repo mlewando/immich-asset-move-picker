@@ -260,7 +260,14 @@ function useGrid(route) {
     }, () => {});
   }, [gridKey, load]);
 
-  return { gridKey, items, error, setError, selected, setSelected, anchor, reload };
+  // Takes just-queued items out of the grid at once; the server leaves them out from now on.
+  const drop = useCallback((ids) => {
+    const gone = new Set(ids);
+    setItems((list) => list && list.filter((i) => !gone.has(i.id)));
+    setSelected((s) => new Set([...s].filter((id) => !gone.has(id))));
+  }, []);
+
+  return { gridKey, items, error, setError, selected, setSelected, anchor, reload, drop };
 }
 
 /** A short message at the bottom ({ kind: 'ok' | 'warn' | 'error', text }), gone after TOAST_MS. */
@@ -279,7 +286,7 @@ function App() {
   const [status, setStatus] = useState(null);
   const [members, setMembers] = useState([]);
   const [tileSize, setTileSize] = useTileSize();
-  const { gridKey, items, error, setError, selected, setSelected, anchor, reload } = useGrid(route);
+  const { gridKey, items, error, setError, selected, setSelected, anchor, reload, drop } = useGrid(route);
   const [toast, setToast] = useToast();
 
   useEffect(() => {
@@ -329,7 +336,8 @@ function App() {
     if (route.kind === 'family' && !confirm(ask)) return;
     try {
       const r = route.kind === 'family' ? await api.giveBack(ids) : await api.move(route.id, ids);
-      setSelected(new Set());
+      // Queued now or already: either way each has an unfinished job, so it leaves the grid.
+      drop(ids);
       // What can't be moved shows up as failed in the jobs indicator (the worker decides).
       const parts = [`${r.queued} queued`];
       if (r.alreadyQueued) parts.push(`${r.alreadyQueued} already queued`);
@@ -338,7 +346,7 @@ function App() {
     } catch (e) {
       setToast({ kind: 'error', text: e.message });
     }
-  }, [selected, route.kind, route.id, refreshJobs]);
+  }, [selected, route.kind, route.id, refreshJobs, drop]);
   const action = {
     label: route.kind === 'family' ? 'Give back' : 'Move to family',
     disabled: readOnly,

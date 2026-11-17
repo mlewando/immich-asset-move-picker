@@ -47,6 +47,11 @@ export type Queue = {
   retry(id: number): boolean;
   counts(kind?: Kind): Record<JobStatus, number>;
   failed(): FailedJob[];
+  /**
+   * Asset ids an unfinished (pending, running or failed) job of this kind works on: each job's
+   * asset plus the originals and family assets recorded so far (a whole stack once known).
+   */
+  unfinishedAssetIds(kind: Kind): Set<string>;
   /** created_at of the oldest pending or running job (ISO), or null. */
   oldestPendingAt(): string | null;
   // Counters kept across restarts (metrics).
@@ -127,6 +132,10 @@ export function openQueue(path: string): Queue {
     retry: db.prepare(`UPDATE job SET status = 'pending', updated_at = ${NOW} WHERE id = ? AND status = 'failed'`),
     counts: db.prepare(`SELECT status, count(*) AS n FROM job WHERE ? IS NULL OR kind = ? GROUP BY status`),
     failed: db.prepare(`SELECT * FROM job WHERE status = 'failed' ORDER BY id`),
+    unfinished: db.prepare(
+      `SELECT source_asset_id, original_ids, family_ids FROM job
+        WHERE kind = ? AND status IN ('pending', 'running', 'failed')`,
+    ),
     oldestPendingAt: db.prepare(`SELECT min(created_at) AS t FROM job WHERE status IN ('pending', 'running')`),
     counter: db.prepare(`SELECT value FROM counter WHERE name = ?`),
     bump: db.prepare(
@@ -157,6 +166,14 @@ export function openQueue(path: string): Queue {
       return out;
     },
     failed: () => (sql.failed.all() as Row[]).map((r) => ({ ...toJob(r), updatedAt: r.updated_at as string })),
+    unfinishedAssetIds(kind) {
+      const out = new Set<string>();
+      for (const r of sql.unfinished.all(kind) as Row[]) {
+        out.add(r.source_asset_id as string);
+        for (const id of [...(ids(r.original_ids) ?? []), ...(ids(r.family_ids) ?? [])]) out.add(id);
+      }
+      return out;
+    },
     oldestPendingAt: () => ((sql.oldestPendingAt.get() as Row).t as string | null) ?? null,
     counter(name) {
       const r = sql.counter.get(name) as Row | undefined;
