@@ -29,7 +29,19 @@ const worker = createWorker({
   immich,
   guard: async () => guard,
   log: { info: () => {}, error: () => {} },
+  waitCheckMs: 500,
 });
+// Every job finished or failed: moves wait for Immich's thumbnails, so idle() alone isn't enough.
+const settled = async (): Promise<void> => {
+  const until = Date.now() + 120_000;
+  for (;;) {
+    await worker.idle();
+    const c = queue.counts();
+    if (c.pending + c.running === 0) return;
+    if (Date.now() > until) throw new Error('jobs still unfinished after 2 min');
+    await new Promise((r) => setTimeout(r, 250));
+  }
+};
 const app = await buildApp({ immich, guard: () => guard, queue, worker });
 const familyId = (
   (await fetch(`${config.immich.apiUrl}/users/me`, { headers: { 'x-api-key': config.immich.familyApiKey } }).then((r) => r.json())) as { id: string }
@@ -132,7 +144,7 @@ test("bytes only in the family account's trash → refused, original untouched (
   try {
     const annaShared = await annaAsset('shared.jpg');
     await post('/api/moves', { memberId: anna.id, assetIds: [annaShared] });
-    await worker.idle();
+    await settled();
     const { failed } = (await json<{ failed: { sourceAssetId: string; error: string }[] }>('/api/jobs')).body;
     assert.equal(failed.find((f) => f.sourceAssetId === annaShared)?.error, 'the family account has shared.jpg in its trash: restore it or empty the trash, then Retry');
     assert.equal((await asset(annaShared)).visibility, 'timeline');
@@ -148,7 +160,7 @@ test('move 3 photos: queued, done, originals archived, copies in the family time
   assert.equal(res.status, 202);
   assert.deepEqual(res.body, { queued: 3, alreadyQueued: 0 });
 
-  await worker.idle();
+  await settled();
   const summary = (await json<{ done: number; failed: { sourceAssetId: string }[] }>('/api/jobs')).body;
   assert.deepEqual([summary.done, summary.failed.filter((f) => ids.includes(f.sourceAssetId))], [3, []]);
 
@@ -159,6 +171,12 @@ test('move 3 photos: queued, done, originals archived, copies in the family time
 
   // Exactly 1 family copy per original; shared.jpg's is the one the family already had.
   for (const i of Object.values(moved)) assert.equal((await familyCopyOf(i.id)).length, 1, i.fileName);
+  // Done only once Immich made each family copy's thumbnail and preview.
+  for (const i of Object.values(moved)) {
+    const [copy] = await familyCopyOf(i.id);
+    const types = await db.query<{ type: string }>(`SELECT DISTINCT type FROM asset_file WHERE "assetId" = $1`, [copy!]);
+    for (const t of ['thumbnail', 'preview']) assert.ok(types.some((r) => r.type === t), `${i.fileName}: ${t}`);
+  }
   assert.ok(familyBefore.has((await familyCopyOf(moved['shared.jpg']!.id))[0]!), 'shared.jpg reused the existing family copy');
 
   const familyGrid = (await json<GridItem[]>('/api/family/assets')).body;
@@ -189,7 +207,7 @@ test("what can't move is queued, then fails with Immich's reason; nothing writte
   const archived = moved['photo-9.jpg']!;
   const res = await post('/api/moves', { memberId: anna.id, assetIds: [nonPrimary, archived.id] });
   assert.deepEqual(res.body, { queued: 2, alreadyQueued: 0 });
-  await worker.idle();
+  await settled();
   const { failed } = (await json<{ failed: { sourceAssetId: string; fileName: string; step: string; error: string }[] }>('/api/jobs')).body;
   const byId = new Map(failed.map((f) => [f.sourceAssetId, f]));
   assert.deepEqual(byId.get(nonPrimary), { ...byId.get(nonPrimary)!, fileName: 'burst-2.jpg', step: 'queued', error: 'part of a stack: move the stack by its primary photo' });
@@ -202,7 +220,7 @@ test('live photo: video + still copied and linked, video hidden; only the still 
   const still = annaIds['live-still.jpg']!;
   const video = annaIds['live-motion.mp4']!;
   await post('/api/moves', { memberId: anna.id, assetIds: [still] });
-  await worker.idle();
+  await settled();
   const [famStill] = await familyCopyOf(still);
   const [famVideo] = await familyCopyOf(video);
   assert.ok(famStill && famVideo);
@@ -222,7 +240,7 @@ test('stack: picked by its primary, moves whole, re-stacked with the same primar
   const [b1, b2, b3] = [annaIds['burst-1.jpg']!, annaIds['burst-2.jpg']!, annaIds['burst-3.jpg']!] as const;
   // burst-2 failed above (not primary): retrying that row would fail again; queue the primary.
   await post('/api/moves', { memberId: anna.id, assetIds: [b1] });
-  await worker.idle();
+  await settled();
   const copies = (await Promise.all([b1, b2, b3].map(familyCopyOf))).map((c) => c[0]!);
   const stacks = await db.query<{ stackId: string; primaryAssetId: string }>(
     `SELECT a."stackId", st."primaryAssetId" FROM asset a JOIN stack st ON st.id = a."stackId" WHERE a.id = ANY($1::uuid[])`, [copies],
@@ -267,7 +285,7 @@ test('give back: photo, live photo and stack return to the member; family copies
     body: JSON.stringify({ assetIds: [familyIds.photo10, familyIds.still, familyIds.burst[0]] }),
   });
   assert.deepEqual(res.body, { queued: 3, alreadyQueued: 0 });
-  await worker.idle();
+  await settled();
 
   for (const id of [photo10, still, ...bursts]) assert.equal((await asset(id)).visibility, 'timeline', id);
   assert.equal((await asset(video)).visibility, 'hidden', "the member's video stays hidden with its still");
@@ -287,7 +305,7 @@ test("give back without an original (family-only.jpg) fails with the reason; not
     method: 'POST', headers: await writeHeaders(),
     body: JSON.stringify({ assetIds: [famOnly!.id] }),
   });
-  await worker.idle();
+  await settled();
   const { failed } = (await json<{ failed: { sourceAssetId: string; kind: string; error: string }[] }>('/api/jobs')).body;
   const f = failed.find((x) => x.sourceAssetId === famOnly!.id)!;
   assert.deepEqual([f.kind, f.error], ['giveback', "no original of family-only.jpg in any member's account: giving it back would delete its only copy"]);

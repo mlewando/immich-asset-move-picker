@@ -4,9 +4,9 @@
 import { openSqlite, transaction, type Row } from './sqlite.ts';
 
 // The last completed step. Each step's Immich call is safe to repeat, so a resume re-runs the next.
-//   move:     queued → copied → archived → linked (done)
+//   move:     queued → copied → archived → linked → thumbnailed (done)
 //   giveback: queued → restored → deleted (done)
-export const STEPS = ['queued', 'copied', 'archived', 'linked', 'restored', 'deleted'] as const;
+export const STEPS = ['queued', 'copied', 'archived', 'linked', 'thumbnailed', 'restored', 'deleted'] as const;
 export type Step = (typeof STEPS)[number];
 export type JobStatus = 'pending' | 'running' | 'done' | 'failed';
 export type Kind = 'move' | 'giveback';
@@ -26,6 +26,8 @@ export type Job = {
   // giveback: the family assets to delete, recorded with 'restored'.
   familyIds: string[] | null;
   error: string | null;
+  // When the job started waiting for Immich (see wait), or null.
+  waitingSince: string | null;
 };
 
 export type FailedJob = Job & { updatedAt: string };
@@ -38,13 +40,27 @@ export type Queue = {
   enqueue(kind: Kind, assetIds: string[], who?: { memberId?: string | null; requestedBy?: string | null }): string[];
   /** After a restart: jobs that were running go back to pending, keeping their step. */
   resetRunning(): number;
+  /** The oldest pending job that isn't waiting (see wait), now running; null when none. */
   claimNext(): Job | null;
   advance(
     id: number,
     patch: { step: Step; familyAssetId?: string; originals?: string[]; familyIds?: string[]; done?: boolean },
   ): void;
   fail(id: number, error: string): void;
+  /**
+   * Back to pending at the same step, waiting for something Immich does on its own: no longer
+   * claimed 1 by 1, but listed by waiting() to be checked all together. The 1st wait records
+   * waitingSince.
+   */
+  wait(id: number): void;
+  /** The waiting jobs, oldest first. */
+  waiting(): Job[];
+  /** updated_at of the latest job done at this step (ISO), or null. */
+  lastDoneAt(step: Step): string | null;
+  /** Failed → pending; any wait starts afresh. */
   retry(id: number): boolean;
+  /** Pending or running jobs at this step. */
+  unfinishedAtStep(step: Step): number;
   counts(kind?: Kind): Record<JobStatus, number>;
   failed(): FailedJob[];
   /**
@@ -83,6 +99,8 @@ export const MIGRATIONS = [
      WHERE status IN ('pending', 'running', 'failed');
    CREATE INDEX job_status ON job (status, id);
    CREATE TABLE counter (name TEXT PRIMARY KEY, value INTEGER NOT NULL);`,
+  // Set while a pending job waits for Immich (thumbnails).
+  `ALTER TABLE job ADD COLUMN waiting_since TEXT;`,
 ];
 
 const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ')`;
@@ -102,6 +120,7 @@ const toJob = (r: Row): Job => {
     originals: ids(r.original_ids),
     familyIds: ids(r.family_ids),
     error: (r.error as string | null) ?? null,
+    waitingSince: (r.waiting_since as string | null) ?? null,
   };
 };
 
@@ -114,7 +133,9 @@ export function openQueue(path: string): Queue {
     resetRunning: db.prepare(`UPDATE job SET status = 'pending', updated_at = ${NOW} WHERE status = 'running'`),
     claim: db.prepare(
       `UPDATE job SET status = 'running', updated_at = ${NOW}
-        WHERE id = (SELECT id FROM job WHERE status = 'pending' ORDER BY id LIMIT 1)
+        WHERE id = (SELECT id FROM job
+                     WHERE status = 'pending' AND waiting_since IS NULL
+                     ORDER BY id LIMIT 1)
         RETURNING *`,
     ),
     advance: db.prepare(
@@ -129,7 +150,16 @@ export function openQueue(path: string): Queue {
         WHERE id = ?`,
     ),
     fail: db.prepare(`UPDATE job SET status = 'failed', error = ?, updated_at = ${NOW} WHERE id = ?`),
-    retry: db.prepare(`UPDATE job SET status = 'pending', updated_at = ${NOW} WHERE id = ? AND status = 'failed'`),
+    wait: db.prepare(
+      `UPDATE job SET status = 'pending', waiting_since = COALESCE(waiting_since, ${NOW}), updated_at = ${NOW}
+        WHERE id = ?`,
+    ),
+    waiting: db.prepare(`SELECT * FROM job WHERE status = 'pending' AND waiting_since IS NOT NULL ORDER BY id`),
+    lastDoneAt: db.prepare(`SELECT max(updated_at) AS t FROM job WHERE step = ? AND status = 'done'`),
+    retry: db.prepare(
+      `UPDATE job SET status = 'pending', waiting_since = NULL, updated_at = ${NOW} WHERE id = ? AND status = 'failed'`,
+    ),
+    atStep: db.prepare(`SELECT count(*) AS n FROM job WHERE step = ? AND status IN ('pending', 'running')`),
     counts: db.prepare(`SELECT status, count(*) AS n FROM job WHERE ? IS NULL OR kind = ? GROUP BY status`),
     failed: db.prepare(`SELECT * FROM job WHERE status = 'failed' ORDER BY id`),
     unfinished: db.prepare(
@@ -159,7 +189,11 @@ export function openQueue(path: string): Queue {
       sql.advance.run(step, familyAssetId ?? null, json(originals), json(familyIds), done ? 1 : 0, id);
     },
     fail: (id, error) => void sql.fail.run(error, id),
+    wait: (id) => void sql.wait.run(id),
+    waiting: () => (sql.waiting.all() as Row[]).map(toJob),
+    lastDoneAt: (step) => ((sql.lastDoneAt.get(step) as Row).t as string | null) ?? null,
     retry: (id) => Number(sql.retry.run(id).changes) > 0,
+    unfinishedAtStep: (step) => Number((sql.atStep.get(step) as Row).n),
     counts(kind) {
       const out: Record<JobStatus, number> = { pending: 0, running: 0, done: 0, failed: 0 };
       for (const r of sql.counts.all(kind ?? null, kind ?? null) as Row[]) out[r.status as JobStatus] = Number(r.n);

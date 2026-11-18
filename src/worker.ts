@@ -5,22 +5,37 @@ import type { Job, Queue } from './queue.ts';
 
 export type JobDeps = {
   queue: Queue;
-  immich: Pick<Immich, 'copyToFamily' | 'archive' | 'linkToFamily' | 'prepareGiveBack' | 'restore' | 'deleteFromFamily'>;
+  immich: Pick<
+    Immich,
+    'copyToFamily' | 'archive' | 'linkToFamily' | 'missingThumbnails' | 'prepareGiveBack' | 'restore' | 'deleteFromFamily'
+  >;
 };
+
+/**
+ * A waiting move fails once Immich got no move's thumbnails done for this long (and it waited at
+ * least as long): Immich looks stuck, not just busy with a big batch. Retry waits again.
+ */
+export const THUMBNAIL_STALL_MS = 30 * 60_000;
+
+const originalsOf = (job: Job): string[] => job.originals ?? [job.sourceAssetId];
 
 /**
  * Move to family: runs the steps after the last recorded one. Each Immich call is safe to repeat,
  * so a crash or a failure resumes cleanly.
  *
- *   queued ──copyToFamily──▶ copied ──archive──▶ archived ──linkToFamily──▶ linked (done)
+ *   queued ──copyToFamily──▶ copied ──archive──▶ archived ──linkToFamily──▶ linked
+ *          ──missingThumbnails──▶ thumbnailed (done)
  *
  * The original is archived only once its family copy fully exists, so a failure before that
  * leaves the member's timeline untouched. A live photo moves with its video, a stack whole
  * (copyToFamily returns the originals, recorded with 'copied').
  *
+ * Immich makes the family copy's thumbnail and preview in its own time (hours behind for a big
+ * batch): until then this returns 'waiting', and checkThumbnails finishes the move later.
+ *
  * Throws on failure (Immich's refusal reason or the error); the caller records it.
  */
-export async function runMove(deps: JobDeps, job: Job): Promise<void> {
+export async function runMove(deps: JobDeps, job: Job): Promise<'done' | 'waiting'> {
   let { step, originals } = job;
   if (step === 'queued') {
     const copy = await deps.immich.copyToFamily(job.sourceAssetId);
@@ -46,8 +61,52 @@ export async function runMove(deps: JobDeps, job: Job): Promise<void> {
     const problems = results.flatMap((r) => (r.result === 'mismatch' || r.result === 'failed' ? [`not linked: ${r.reason}`] : []));
     if (problems.length) throw new Error([...new Set(problems)].join('; '));
     step = 'linked';
+    deps.queue.advance(job.id, { step });
+  }
+  if (step === 'linked') {
+    // Usually not ready yet; a family copy that already existed (same bytes) is.
+    if ((await deps.immich.missingThumbnails(originals ?? [job.sourceAssetId])).size) return 'waiting';
+    step = 'thumbnailed';
     deps.queue.advance(job.id, { step, done: true });
   }
+  return 'done';
+}
+
+/**
+ * All waiting moves at once, 1 Immich query: those whose family copies have their thumbnails
+ * are done. Immich works through its queue in its own order and pace, so a move doesn't fail for
+ * waiting long, only when no move got its thumbnails for THUMBNAIL_STALL_MS (Immich stuck or a
+ * file it can't read). Returns how many jobs changed.
+ */
+export async function checkThumbnails(
+  deps: JobDeps,
+  { now = Date.now(), stallMs = THUMBNAIL_STALL_MS } = {},
+): Promise<number> {
+  const waiting = deps.queue.waiting();
+  if (!waiting.length) return 0;
+  const missing = await deps.immich.missingThumbnails(waiting.flatMap(originalsOf));
+  let changed = 0;
+  const still: Job[] = [];
+  for (const job of waiting) {
+    if (originalsOf(job).some((id) => missing.has(id))) {
+      still.push(job);
+    } else {
+      deps.queue.advance(job.id, { step: 'thumbnailed', done: true });
+      changed++;
+    }
+  }
+  const last = deps.queue.lastDoneAt('thumbnailed');
+  for (const job of still) {
+    const since = Math.max(Date.parse(job.waitingSince!), last ? Date.parse(last) : 0);
+    if (now - since > stallMs) {
+      deps.queue.fail(
+        job.id,
+        `Immich made no thumbnails for ${Math.round(stallMs / 60_000)} min: check Immich's Generate Thumbnails job, then Retry`,
+      );
+      changed++;
+    }
+  }
+  return changed;
 }
 
 /**
@@ -58,7 +117,7 @@ export async function runMove(deps: JobDeps, job: Job): Promise<void> {
  * Originals first: a failure after that leaves the photo in both places, never in neither. The
  * family files to delete are recorded with 'restored', so a resume deletes exactly those.
  */
-export async function runGiveBack(deps: JobDeps, job: Job): Promise<void> {
+export async function runGiveBack(deps: JobDeps, job: Job): Promise<'done'> {
   let { step, familyIds } = job;
   if (step === 'queued') {
     const plan = await deps.immich.prepareGiveBack(job.sourceAssetId);
@@ -74,6 +133,7 @@ export async function runGiveBack(deps: JobDeps, job: Job): Promise<void> {
     step = 'deleted';
     deps.queue.advance(job.id, { step, done: true });
   }
+  return 'done';
 }
 
 /** Counter: files not hard-linked because they differ (the link_mismatch_total metric). */
@@ -94,12 +154,17 @@ export function createWorker(
     guard: () => Promise<GuardResult>;
     log: { info(msg: string): void; error(msg: string): void };
     onChange?: () => void;
+    /** How often waiting moves are checked against Immich (default 30 s). */
+    waitCheckMs?: number;
   },
 ): Worker {
+  const waitCheckMs = deps.waitCheckMs ?? 30_000;
   let running: Promise<void> | null = null;
   let again = false;
   let paused = false;
   let pausedReason: string[] = [];
+  let wakeTimer: NodeJS.Timeout | undefined;
+  let lastCheck = 0;
 
   const drain = async (): Promise<void> => {
     for (;;) {
@@ -110,11 +175,17 @@ export function createWorker(
         deps.log.error(`worker paused: ${guard.problems.join('; ')}`);
         return;
       }
+      // Also between jobs: a long batch of copies doesn't hold back the moves already copied.
+      if (Date.now() - lastCheck >= waitCheckMs) {
+        lastCheck = Date.now();
+        if (await checkThumbnails(deps)) deps.onChange?.();
+      }
       const job = deps.queue.claimNext();
       if (!job) return;
       try {
-        await (job.kind === 'giveback' ? runGiveBack : runMove)(deps, job);
-        deps.log.info(`${job.kind} ${job.id} done: ${job.sourceAssetId}`);
+        const outcome = await (job.kind === 'giveback' ? runGiveBack : runMove)(deps, job);
+        if (outcome === 'waiting') deps.queue.wait(job.id);
+        else deps.log.info(`${job.kind} ${job.id} done: ${job.sourceAssetId}`);
       } catch (err) {
         const message = (err as Error).message;
         deps.log.error(`${job.kind} ${job.id} failed: ${message}`);
@@ -141,8 +212,23 @@ export function createWorker(
       } while (again);
     })().finally(() => {
       running = null;
+      scheduleWake();
       deps.onChange?.();
     });
+  };
+
+  // While moves wait for thumbnails, come back for the next check. A paused worker waits for
+  // the periodic kick instead.
+  const scheduleWake = (): void => {
+    clearTimeout(wakeTimer);
+    if (paused) return;
+    let waiting = 0;
+    try {
+      waiting = deps.queue.unfinishedAtStep('linked');
+    } catch {
+      return;
+    }
+    if (waiting) wakeTimer = setTimeout(kick, Math.max(1000, waitCheckMs - (Date.now() - lastCheck))).unref();
   };
 
   return {

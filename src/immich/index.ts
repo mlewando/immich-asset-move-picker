@@ -16,6 +16,7 @@ import { checkGuard, type GuardResult } from './guard.ts';
 import { deleteFromFamily, prepareGiveBack, type GiveBackPlan } from './giveback.ts';
 import { linkToFamily, sqlLinkPairs, type LinkResult } from './link.ts';
 import { mapImmichPath } from './paths.ts';
+import { missingThumbnails } from './thumbnails.ts';
 import { setVisibility, type VisibilityResult } from './visibility.ts';
 
 export type { Album, GridItem, MediaKind, Member, TimelineFilter } from './catalog.ts';
@@ -63,6 +64,11 @@ export type Immich = {
    * 'mismatch' = the files differ.
    */
   linkToFamily(originalIds: string[]): Promise<LinkResult[]>;
+  /**
+   * The originals whose family copy Immich hasn't made a thumbnail and preview for yet (it does
+   * that after an upload, in its own job queue). 1 query, however many originals.
+   */
+  missingThumbnails(originalIds: string[]): Promise<Set<string>>;
   /** Give back, last step: force-deletes these family assets (gone ones are skipped). */
   deleteFromFamily(familyAssetIds: string[]): Promise<void>;
 
@@ -137,6 +143,7 @@ export function createImmich(cfg: {
     deleteFromFamily: async (ids) => deleteFromFamily(db, api, await familyId(), ids),
     linkToFamily: (ids) =>
       linkToFamily({ pairs: sqlLinkPairs(db, familyId), localPath: (p) => mapImmichPath(p, cfg.library) }, ids),
+    missingThumbnails: async (ids) => missingThumbnails(db, await familyId(), ids),
 
     check: () => checkGuard({ api, db }),
     async ping() {

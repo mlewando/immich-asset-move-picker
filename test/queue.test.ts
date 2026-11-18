@@ -41,7 +41,8 @@ test('advance records step and copy; fail/retry; failed list', () => {
   const [f] = q.failed();
   assert.deepEqual({ ...f, updatedAt: undefined }, {
     id: a.id, kind: 'move', sourceAssetId: 'a', memberId: M, status: 'failed', step: 'copied',
-    familyAssetId: 'fam-a', originals: ['a', 'a2'], familyIds: null, error: 'asset is in the trash', updatedAt: undefined,
+    familyAssetId: 'fam-a', originals: ['a', 'a2'], familyIds: null, error: 'asset is in the trash', waitingSince: null,
+    updatedAt: undefined,
   });
   assert.equal(q.retry(a.id), true);
   assert.equal(q.retry(a.id), false, 'only failed moves');
@@ -129,6 +130,51 @@ test('survives a restart: running moves go back to pending with their step', () 
     assert.equal(q.resetRunning(), 1);
     const resumed = q.claimNext()!;
     assert.deepEqual([resumed.id, resumed.step, resumed.familyAssetId], [a.id, 'copied', 'fam-a']);
+    q.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('wait: pending at the same step, listed by waiting() instead of claimed; retry clears the wait', () => {
+  const q = openQueue(':memory:');
+  q.enqueue('move', ['a', 'b'], { memberId: M });
+  const a = q.claimNext()!;
+  q.advance(a.id, { step: 'linked' });
+  q.wait(a.id);
+  assert.deepEqual(q.counts(), { pending: 2, running: 0, done: 0, failed: 0 });
+  assert.equal(q.unfinishedAtStep('linked'), 1);
+  assert.equal(q.claimNext()!.sourceAssetId, 'b', 'a waits');
+  assert.equal(q.claimNext(), null);
+  const [w] = q.waiting();
+  assert.deepEqual([w!.id, w!.step], [a.id, 'linked']);
+  const since = w!.waitingSince;
+  assert.match(since!, /^\d{4}-\d{2}-\d{2}T/);
+  q.wait(a.id);
+  assert.equal(q.waiting()[0]!.waitingSince, since, 'recorded by the 1st wait only');
+
+  assert.equal(q.lastDoneAt('thumbnailed'), null);
+  q.fail(a.id, 'no thumbnails');
+  assert.deepEqual(q.waiting(), [], 'failed is not waiting');
+  q.retry(a.id);
+  const again = q.claimNext()!;
+  assert.deepEqual([again.id, again.step, again.waitingSince], [a.id, 'linked', null]);
+  q.advance(a.id, { step: 'thumbnailed', done: true });
+  assert.match(q.lastDoneAt('thumbnailed')!, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test('a queue file from the previous version is migrated with its jobs', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'picker-queue-'));
+  try {
+    const path = join(dir, 'queue.db');
+    const old = new DatabaseSync(path);
+    old.exec(MIGRATIONS[0]!);
+    old.exec(`PRAGMA user_version = 1`);
+    old.exec(`INSERT INTO job (kind, source_asset_id, member_id, step) VALUES ('move', 'a', 'm', 'archived')`);
+    old.close();
+    const q = openQueue(path);
+    const a = q.claimNext()!;
+    assert.deepEqual([a.sourceAssetId, a.step, a.waitingSince], ['a', 'archived', null]);
     q.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

@@ -48,4 +48,6 @@ _Avoid_: dedup, symlink
 
 **Job**:
 1 queued Move to family or Give back, run by the in-process worker step by step; each step is
-recorded, so a failure or restart resumes where it stopped.
+recorded, so a failure or restart resumes where it stopped. A move's last step waits for Immich
+to make the family copy's thumbnails (shown as "processing thumbnails"), without holding up other
+jobs.

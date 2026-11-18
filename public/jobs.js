@@ -1,4 +1,5 @@
-// Job progress (moves and give backs) in the top bar: "Working on N…", failures with Retry, a paused
+// Job progress (moves and give backs) in the top bar: "Working on N…" (with how many wait for
+// Immich's thumbnails), failures with Retry, a paused
 // worker, and the Storage Template Migration reminder after moves.
 import { h } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
@@ -67,7 +68,7 @@ export function JobsIndicator({ summary, onRetry }) {
       html`<span class=${`${pillBase} ${paused ? 'bg-amber-500/15 text-amber-200' : 'bg-sky-500/15 text-sky-200'}`} title=${paused ? summary.worker.pausedReason.join(' · ') : ''}>
         ${paused
           ? html`<${Icon} name="alert" class="size-3.5" />Paused · ${active} waiting`
-          : html`<span class="size-3 animate-spin rounded-full border-2 border-sky-300/30 border-t-sky-300" />Working on ${active}…`}
+          : html`<span class="size-3 animate-spin rounded-full border-2 border-sky-300/30 border-t-sky-300" />Working on ${active}…${summary.processingThumbnails > 0 && ` · ${summary.processingThumbnails} processing thumbnails`}`}
       </span>`}
       ${failed > 0 &&
       html`<button class=${`${pillBase} bg-rose-500/15 text-rose-200 hover:bg-rose-500/25`} onClick=${() => setOpen(!open)} aria-expanded=${open}>

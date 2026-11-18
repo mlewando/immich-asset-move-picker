@@ -23,7 +23,7 @@ export type ServerDeps = {
   immich: ServerImmich;
   // Last guard result (checked on start and before each job).
   guard: () => GuardResult | undefined;
-  queue: Pick<Queue, 'enqueue' | 'retry' | 'counts' | 'failed' | 'unfinishedAssetIds'>;
+  queue: Pick<Queue, 'enqueue' | 'retry' | 'counts' | 'failed' | 'unfinishedAssetIds' | 'unfinishedAtStep'>;
   worker: Pick<Worker, 'kick' | 'state'>;
 };
 
@@ -271,6 +271,8 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
       running: counts.running,
       done: counts.done,
       movesDone: deps.queue.counts('move').done, // for the Storage Template reminder
+      // Moves copied and linked, waiting for Immich to make the family copy's thumbnails.
+      processingThumbnails: deps.queue.unfinishedAtStep('linked'),
       failed: failed.map((f) => ({
         id: f.id,
         kind: f.kind,
