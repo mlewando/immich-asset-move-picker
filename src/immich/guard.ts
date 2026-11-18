@@ -5,8 +5,8 @@ import type { ImmichApi } from './api.ts';
 import type { Db } from './db.ts';
 
 // Each version tested on its own (integration tests against it), not a semver range: a later
-// patch of an older minor (e.g. 3.3.7) sorts inside "3.3.5 to 3.4.1" but is untested.
-export const SUPPORTED_IMMICH_VERSIONS: readonly string[] = ['3.3.5', '3.3.6', '3.4.0', '3.4.1'];
+// patch of an older minor sorts inside a range like "3.3.5 to 3.4.1" but is untested.
+export const SUPPORTED_IMMICH_VERSIONS: readonly string[] = ['3.4.1'];
 
 // Columns the picker reads. information_schema.columns lists only columns the current role has a
 // privilege on, so a missing GRANT shows up here too.

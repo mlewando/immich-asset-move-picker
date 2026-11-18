@@ -92,7 +92,7 @@ export function fakeDb(schema: FakeSchema = healthySchema(), opts: { down?: bool
   };
 }
 
-export function fakeApi(version: ServerVersion | Error = { major: 3, minor: 3, patch: 5 }): Pick<ImmichApi, 'getServerVersion'> {
+export function fakeApi(version: ServerVersion | Error = { major: 3, minor: 4, patch: 1 }): Pick<ImmichApi, 'getServerVersion'> {
   return {
     async getServerVersion() {
       if (version instanceof Error) throw version;

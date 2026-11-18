@@ -14,12 +14,12 @@ thumbnails for 30 min (Retry checks again, nothing is moved twice).
 
 Nothing is ever deleted that has no other copy, and every step can be resumed after a failure.
 
-> Works only with **Immich v3.3.5 to v3.4.1**, i.e. exactly v3.3.5, v3.3.6, v3.4.0 and v3.4.1.
+> Works only with **Immich v3.4.1**.
 > It writes to Immich's database and library directly, so on any other version (or schema) it
 > stays read-only until it has been tested and updated. Each release's notes repeat its range.
 
 ## Requirements
-- **Immich v3.3.5 to v3.4.1** (v3.3.5, v3.3.6, v3.4.0, v3.4.1), with the library reachable as
+- **Immich v3.4.1**, with the library reachable as
   files.
 - An **API key of the family account** with the permissions `asset.upload`, `asset.update`,
   `asset.delete`, `stack.create` and `user.read`.
@@ -102,9 +102,9 @@ npm test            # unit tests
 npm run test:int    # integration tests against the local Immich
 npm run dev:reset   # wipe the local Immich
 ```
-To test another supported Immich version, start over with it (Immich can't downgrade its
-database): `npm run dev:reset`, then `export IMMICH_VERSION=v3.3.5`, `npm run dev:up`,
-`npm run dev:seed`, `npm run test:int`.
+To test another Immich version (before adding it to the supported ones), start over with it
+(Immich can't downgrade its database): `npm run dev:reset`, then `export IMMICH_VERSION=v3.4.2`,
+`npm run dev:up`, `npm run dev:seed`, `npm run test:int`.
 `npm run dev:app` runs without a login. To try the real one, a local Authelia (the homelab's
 version, the same picker client and group policy) runs next to Immich:
 ```sh
