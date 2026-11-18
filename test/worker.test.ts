@@ -246,12 +246,12 @@ test('thumbnails not ready: the move waits at "linked", not claimed again; once 
   await waitingMoves(s, ['a']);
   assert.equal(s.queue.claimNext(), null);
   assert.equal(s.queue.unfinishedAtStep('linked'), 1);
-  assert.equal(await checkThumbnails(s.deps), 0);
+  assert.equal((await checkThumbnails(s.deps)).done.length, 0);
   assert.deepEqual(s.queue.counts(), { pending: 1, running: 0, done: 0, failed: 0 });
 
   s.noThumbs.delete('a');
   s.calls.length = 0;
-  assert.equal(await checkThumbnails(s.deps), 1);
+  assert.equal((await checkThumbnails(s.deps)).done.length, 1);
   assert.deepEqual(s.calls, ['thumbs:a'], 'no copy, archive or link again');
   assert.deepEqual(s.queue.counts(), { pending: 0, running: 0, done: 1, failed: 0 });
   assert.equal(s.queue.unfinishedAtStep('linked'), 0);
@@ -263,7 +263,7 @@ test('thumbnails: all waiting moves checked in 1 Immich call; each done on its o
   s.noThumbs.add('b2');
   s.noThumbs.delete('a');
   s.noThumbs.delete('p');
-  assert.equal(await checkThumbnails(s.deps), 1);
+  assert.equal((await checkThumbnails(s.deps)).done.length, 1);
   assert.deepEqual(s.calls, ['thumbs:a,p,b2']);
   assert.deepEqual(s.queue.waiting().map((j) => j.sourceAssetId), ['p'], 'the stack waits for all its copies');
 });
@@ -274,7 +274,7 @@ test('thumbnails: a long wait is fine while other moves get theirs; no progress 
   await sleep(100);
   s.noThumbs.delete('b');
   // a has waited ~150 ms > 120, but b got its thumbnails just now: Immich is busy, not stuck.
-  assert.equal(await checkThumbnails(s.deps, { now: Date.now() + 50, stallMs: 120 }), 1);
+  assert.equal((await checkThumbnails(s.deps, { now: Date.now() + 50, stallMs: 120 })).done.length, 1);
   assert.deepEqual(s.queue.waiting().map((j) => j.sourceAssetId), ['a']);
 
   await checkThumbnails(s.deps, { now: Date.now() + THUMBNAIL_STALL_MS + 1000 });
@@ -300,14 +300,36 @@ test('worker: moves waiting for thumbnails do not hold up the next job; a later 
   const s = setup({ a: 'timeline', b: 'timeline' });
   s.noThumbs.add('a');
   s.queue.enqueue('move', ['a', 'b'], { memberId: MEMBER });
-  const wk = createWorker({ ...s.deps, guard: async () => ok, log: silent, waitCheckMs: 0 });
+  const logged: string[] = [];
+  const log = { info: (m: string) => void logged.push(m), error: (m: string) => void logged.push(m) };
+  const wk = createWorker({ ...s.deps, guard: async () => ok, log, waitCheckMs: 0 });
   wk.kick();
   await wk.idle();
   assert.deepEqual(s.queue.counts(), { pending: 1, running: 0, done: 1, failed: 0 });
+  assert.deepEqual(logged, ['move 2 done: b']);
   s.noThumbs.delete('a');
   wk.kick();
   await wk.idle();
   assert.deepEqual(s.queue.counts(), { pending: 0, running: 0, done: 2, failed: 0 });
+  assert.deepEqual(logged, ['move 2 done: b', 'move 1 done: a'], 'a move finished by the check is logged too');
+});
+
+test('worker: a move failed by the thumbnail check is logged', async () => {
+  const s = setup({ a: 'timeline' });
+  await waitingMoves(s, ['a']);
+  const logged: string[] = [];
+  const log = { info: (m: string) => void logged.push(m), error: (m: string) => void logged.push(m) };
+  const wk = createWorker({ ...s.deps, guard: async () => ok, log, waitCheckMs: 0 });
+  const realNow = Date.now;
+  Date.now = () => realNow() + THUMBNAIL_STALL_MS + 1000;
+  try {
+    wk.kick();
+    await wk.idle();
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal(logged.length, 1);
+  assert.match(logged[0]!, /^move 1 failed: Immich made no thumbnails for 30 min/);
 });
 
 // --- give back -----------------------------------------------------------------------------------

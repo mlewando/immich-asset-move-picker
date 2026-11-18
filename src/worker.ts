@@ -76,37 +76,35 @@ export async function runMove(deps: JobDeps, job: Job): Promise<'done' | 'waitin
  * All waiting moves at once, 1 Immich query: those whose family copies have their thumbnails
  * are done. Immich works through its queue in its own order and pace, so a move doesn't fail for
  * waiting long, only when no move got its thumbnails for THUMBNAIL_STALL_MS (Immich stuck or a
- * file it can't read). Returns how many jobs changed.
+ * file it can't read). Returns the jobs it finished and those it failed (with the error).
  */
 export async function checkThumbnails(
   deps: JobDeps,
   { now = Date.now(), stallMs = THUMBNAIL_STALL_MS } = {},
-): Promise<number> {
+): Promise<{ done: Job[]; failed: { job: Job; error: string }[] }> {
+  const out: { done: Job[]; failed: { job: Job; error: string }[] } = { done: [], failed: [] };
   const waiting = deps.queue.waiting();
-  if (!waiting.length) return 0;
+  if (!waiting.length) return out;
   const missing = await deps.immich.missingThumbnails(waiting.flatMap(originalsOf));
-  let changed = 0;
   const still: Job[] = [];
   for (const job of waiting) {
     if (originalsOf(job).some((id) => missing.has(id))) {
       still.push(job);
     } else {
       deps.queue.advance(job.id, { step: 'thumbnailed', done: true });
-      changed++;
+      out.done.push(job);
     }
   }
   const last = deps.queue.lastDoneAt('thumbnailed');
   for (const job of still) {
     const since = Math.max(Date.parse(job.waitingSince!), last ? Date.parse(last) : 0);
     if (now - since > stallMs) {
-      deps.queue.fail(
-        job.id,
-        `Immich made no thumbnails for ${Math.round(stallMs / 60_000)} min: check Immich's Generate Thumbnails job, then Retry`,
-      );
-      changed++;
+      const error = `Immich made no thumbnails for ${Math.round(stallMs / 60_000)} min: check Immich's Generate Thumbnails job, then Retry`;
+      deps.queue.fail(job.id, error);
+      out.failed.push({ job, error });
     }
   }
-  return changed;
+  return out;
 }
 
 /**
@@ -178,7 +176,10 @@ export function createWorker(
       // Also between jobs: a long batch of copies doesn't hold back the moves already copied.
       if (Date.now() - lastCheck >= waitCheckMs) {
         lastCheck = Date.now();
-        if (await checkThumbnails(deps)) deps.onChange?.();
+        const checked = await checkThumbnails(deps);
+        for (const job of checked.done) deps.log.info(`${job.kind} ${job.id} done: ${job.sourceAssetId}`);
+        for (const { job, error } of checked.failed) deps.log.error(`${job.kind} ${job.id} failed: ${error}`);
+        if (checked.done.length || checked.failed.length) deps.onChange?.();
       }
       const job = deps.queue.claimNext();
       if (!job) return;
