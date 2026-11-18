@@ -184,7 +184,9 @@ test("photo-9's edits are on its family copy, with the original's time zone", as
 
 test("what can't move is queued, then fails with Immich's reason; nothing written", async () => {
   const nonPrimary = annaIds['burst-2.jpg']!;
-  const archived = moved['photo-10.jpg']!; // moved above → archived
+  // Moved above → archived. Not photo-10: its failed job would hide it from Bob's grid after the
+  // give back below (a failed job's asset stays hidden until retried).
+  const archived = moved['photo-9.jpg']!;
   const res = await post('/api/moves', { memberId: anna.id, assetIds: [nonPrimary, archived.id] });
   assert.deepEqual(res.body, { queued: 2, alreadyQueued: 0 });
   await worker.idle();
