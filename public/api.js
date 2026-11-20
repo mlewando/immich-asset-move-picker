@@ -53,6 +53,14 @@ export const api = {
   memberAlbums: (id) => get(`/api/members/${id}/albums`),
   familyAssets: (opts) => get('/api/family/assets', opts),
   jobs: (opts) => get('/api/jobs', opts),
+  // 1 page of a queue section ('active' | 'failed' | 'done') → { jobs, next }; after: the previous page's next.
+  jobList: ({ section, after, onlyFailures }, opts) => {
+    const q = new URLSearchParams({ section });
+    if (after != null) q.set('after', String(after));
+    if (onlyFailures) q.set('onlyFailures', 'true');
+    return get(`/api/jobs/list?${q}`, opts);
+  },
+  jobEvents: (id, opts) => get(`/api/jobs/${id}/events`, opts),
   move: (memberId, assetIds) => request('POST', '/api/moves', { memberId, assetIds }),
   giveBack: (assetIds) => request('POST', '/api/givebacks', { assetIds }),
   retryJob: (id) => request('POST', `/api/jobs/${id}/retry`),

@@ -57,7 +57,7 @@ test('page: index.html with CSP that allows exactly its import map', async () =>
 
 test('page: client-side routes load index.html; malformed ones do not', async () => {
   const index = (await call({}, '/')).body;
-  for (const url of ['/family', `/members/${ANNA}`, `/members/${ANNA}?asset=${ASSET}`]) {
+  for (const url of ['/family', '/queue', `/members/${ANNA}`, `/members/${ANNA}?asset=${ASSET}`]) {
     const res = await call({}, url);
     assert.equal(res.statusCode, 200, url);
     assert.equal(res.body, index, url);
@@ -69,12 +69,14 @@ test('page: client-side routes load index.html; malformed ones do not', async ()
 test('page: app modules and the vendored libraries named in the import map are served', async () => {
   const page = (await call({}, '/')).body;
   const { imports } = JSON.parse(/<script type="importmap">([\s\S]*?)<\/script>/.exec(page)![1]!) as { imports: Record<string, string> };
-  for (const url of [...Object.values(imports), '/app.js', '/api.js', '/selection.js', '/grid.js', '/viewer.js', '/icons.js', '/jobs.js', '/expiry.js', '/app.css']) {
+  for (const url of [...Object.values(imports), '/app.js', '/api.js', '/selection.js', '/grid.js', '/viewer.js', '/icons.js', '/jobs.js', '/queue.js', '/expiry.js', '/app.css']) {
     const res = await call({}, url);
     assert.equal(res.statusCode, 200, url);
   }
   assert.match(String((await call({}, '/vendor/preact.mjs')).headers['content-type']), /javascript/);
   assert.equal((await call({}, '/vendor/package.json')).statusCode, 400);
+  assert.match(String((await call({}, '/fonts/overpass-latin.woff2')).headers['content-type']), /font\/woff2/);
+  assert.equal((await call({}, '/fonts/package.json')).statusCode, 400);
   assert.equal((await call({}, '/../package.json')).statusCode, 404);
 });
 
@@ -186,6 +188,38 @@ test('moves: summary (file names from Immich) and retry', async () => {
   assert.equal((await call({ guard: guardOk, queue, worker }, post(`/api/jobs/${m.id}/retry`))).statusCode, 404, 'not failed any more');
 });
 
+test('queue page: sections with each job\'s asset and file name; a job\'s history', async () => {
+  const ORIGINAL = '00000000-0000-4000-8000-00000000a552';
+  const queue = openQueue(':memory:');
+  queue.enqueue('move', [ASSET], { memberId: ANNA, requestedBy: 'curator@x' });
+  queue.enqueue('giveback', ['00000000-0000-4000-8000-00000000fa77']);
+  const m = queue.claimNext()!;
+  queue.retryLater(m.id, 'Immich POST /assets: fetch failed', new Date(Date.now() - 1));
+  queue.claimNext();
+  queue.advance(m.id, { step: 'thumbnailed', done: true });
+  const g = queue.claimNext()!;
+  queue.advance(g.id, { step: 'restored', originals: [ORIGINAL], familyIds: [g.sourceAssetId] });
+  const immich = fakeImmich({ names: { [ASSET]: 'f.jpg', [ORIGINAL]: 'o.jpg' } });
+
+  const done = (await call({ immich, queue }, '/api/jobs/list?section=done&onlyFailures=true')).json();
+  assert.deepEqual(
+    done.jobs.map((j: Record<string, unknown>) => [j.thumbAssetId, j.fileName, j.failures, j.requestedBy]),
+    [[ASSET, 'f.jpg', 1, 'curator@x']],
+  );
+  assert.equal(done.next, null);
+  const active = (await call({ immich, queue }, '/api/jobs/list?section=active')).json();
+  assert.deepEqual(active.jobs.map((j: Record<string, unknown>) => [j.kind, j.thumbAssetId, j.fileName]), [['giveback', ORIGINAL, 'o.jpg']], 'a give back shows the original');
+  assert.equal((await call({ queue }, '/api/jobs/list?section=nope')).statusCode, 400);
+  assert.equal((await call({ queue }, '/api/jobs/list')).statusCode, 400);
+
+  const events = (await call({ queue }, `/api/jobs/${m.id}/events`)).json();
+  assert.deepEqual(events.map((e: Record<string, unknown>) => e.type), ['queued', 'retrying', 'done']);
+  assert.equal(events[1].message, 'Immich POST /assets: fetch failed');
+  assert.equal((await call({ queue }, '/api/jobs/999/events')).statusCode, 404);
+  assert.equal((await call({ queue }, '/api/jobs/x/events')).statusCode, 400);
+  assert.equal((await call({ queue }, '/api/jobs')).json().retrying, 0);
+});
+
 // --- read side --------------------------------------------------------------------------------
 test('members are listed; unlisted fields are dropped', async () => {
   const immich = fakeImmich({ members: [{ id: ANNA, name: 'Anna', email: 'anna@example.test', password: 'leak' } as never] });
@@ -220,7 +254,7 @@ test('member timeline filter: album + day range passed on; malformed values → 
 });
 
 test('member albums: only for a listed member', async () => {
-  const albums = [{ id: '00000000-0000-4000-8000-0000000a1b01', name: 'Holiday', count: 3 }];
+  const albums = [{ id: '00000000-0000-4000-8000-0000000a1b01', name: 'Holiday', count: 3, from: '2026-07-01', to: '2026-07-14' }];
   const immich = fakeImmich({ members: [{ id: ANNA, name: 'Anna', email: 'a@x' }], albums: { [ANNA]: albums } });
   assert.deepEqual((await call({ immich }, `/api/members/${ANNA}/albums`)).json(), albums);
   assert.equal((await call({ immich }, `/api/members/${FAMILY_ID}/albums`)).statusCode, 404);
@@ -294,4 +328,11 @@ test('media: 404 for no file, dotfile; 400 for unknown kind', async () => {
   assert.equal((await call(over, `/media/${ASSET}/thumbnail`)).statusCode, 404, 'dotfile');
   assert.equal((await call(over, `/media/${ASSET}/preview`)).statusCode, 404, 'no file');
   assert.equal((await call(over, `/media/${ASSET}/original`)).statusCode, 400);
+});
+
+test('media: 503 to ask again while Immich is still making the thumbnail', async () => {
+  const res = await call({ immich: fakeImmich({ media: { [`${ASSET}/thumbnail`]: 'pending' } }) }, `/media/${ASSET}/thumbnail`);
+  assert.equal(res.statusCode, 503);
+  assert.equal(res.headers['retry-after'], '5');
+  assert.equal(res.headers['cache-control'], 'no-store');
 });

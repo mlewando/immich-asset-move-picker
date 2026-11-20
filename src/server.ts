@@ -10,7 +10,7 @@ import fastifyStatic from '@fastify/static';
 import Fastify, { LogController, type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { cookieNaming, isSafeMethod, registerAuth, type AuthDeps } from './auth.ts';
 import type { GridItem, GuardResult, Immich, MediaKind } from './immich/index.ts';
-import type { Kind, Queue } from './queue.ts';
+import type { Kind, ListedJob, Queue, Section } from './queue.ts';
 import type { Worker } from './worker.ts';
 
 // The HTTP layer only reads from Immich; writes happen in the worker.
@@ -23,7 +23,10 @@ export type ServerDeps = {
   immich: ServerImmich;
   // Last guard result (checked on start and before each job).
   guard: () => GuardResult | undefined;
-  queue: Pick<Queue, 'enqueue' | 'retry' | 'counts' | 'failed' | 'unfinishedAssetIds' | 'unfinishedAtStep'>;
+  queue: Pick<
+    Queue,
+    'enqueue' | 'retry' | 'counts' | 'failed' | 'unfinishedAssetIds' | 'unfinishedAtStep' | 'retrying' | 'list' | 'events'
+  >;
   worker: Pick<Worker, 'kick' | 'state'>;
 };
 
@@ -33,6 +36,13 @@ const VENDOR = {
   'preact.mjs': fileURLToPath(import.meta.resolve('preact')),
   'preact-hooks.mjs': fileURLToPath(import.meta.resolve('preact/hooks')),
   'htm.mjs': fileURLToPath(import.meta.resolve('htm')),
+};
+// The page's font (Overpass, as in Immich's web app), Latin with Polish and other accents; the
+// @font-face rules are in styles/app.css.
+const font = (file: string) => fileURLToPath(import.meta.resolve(`@fontsource-variable/overpass/files/${file}`));
+const FONTS = {
+  'overpass-latin.woff2': font('overpass-latin-wght-normal.woff2'),
+  'overpass-latin-ext.woff2': font('overpass-latin-ext-wght-normal.woff2'),
 };
 
 // Response schemas double as an allow-list: Fastify's serializer drops any field not listed.
@@ -68,6 +78,29 @@ const errorSchema = { type: 'object', properties: { error: { type: 'string' } } 
 const uuidParam = { type: 'string', format: 'uuid' } as const;
 const memberParams = { type: 'object', required: ['id'], properties: { id: uuidParam } } as const;
 const assetIds = { type: 'array', minItems: 1, maxItems: 10_000, uniqueItems: true, items: uuidParam } as const;
+const jobParams = { type: 'object', required: ['id'], properties: { id: { type: 'integer', minimum: 1 } } } as const;
+const listedJobSchema = {
+  type: 'object',
+  required: ['id', 'kind', 'status', 'step', 'attempts', 'sourceAssetId', 'thumbAssetId', 'createdAt', 'updatedAt', 'failures'],
+  properties: {
+    id: { type: 'integer' },
+    kind: { type: 'string', enum: ['move', 'giveback'] },
+    status: { type: 'string', enum: ['pending', 'running', 'done', 'failed'] },
+    step: { type: 'string' },
+    error: nullable('string'),
+    attempts: { type: 'integer' },
+    retryAt: nullable('string'),
+    waitingSince: nullable('string'),
+    sourceAssetId: { type: 'string' },
+    thumbAssetId: { type: 'string' },
+    fileName: nullable('string'),
+    memberId: nullable('string'),
+    requestedBy: nullable('string'),
+    createdAt: { type: 'string' },
+    updatedAt: { type: 'string' },
+    failures: { type: 'integer' },
+  },
+} as const;
 
 type AppOptions = {
   logger?: boolean;
@@ -149,6 +182,7 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
   // The page's own URLs (client-side routes) all load the same index.html.
   const page = (_req: unknown, reply: FastifyReply) => reply.sendFile('index.html');
   app.get('/family', page);
+  app.get('/queue', page);
   app.get('/members/:id', { schema: { params: memberParams } }, page);
 
   // Browser builds of the UI libraries, straight from node_modules (no CDN, no build step).
@@ -158,6 +192,14 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
     (req, reply) => {
       const path = VENDOR[req.params.file];
       return reply.sendFile(basename(path), dirname(path), { maxAge: '1d', cacheControl: true });
+    },
+  );
+  app.get<{ Params: { file: keyof typeof FONTS } }>(
+    '/fonts/:file',
+    { schema: { params: { type: 'object', properties: { file: { type: 'string', enum: Object.keys(FONTS) } } } } },
+    (req, reply) => {
+      const path = FONTS[req.params.file];
+      return reply.sendFile(basename(path), dirname(path), { maxAge: '30d', cacheControl: true });
     },
   );
 
@@ -240,8 +282,14 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
             type: 'array',
             items: {
               type: 'object',
-              required: ['id', 'name', 'count'],
-              properties: { id: { type: 'string' }, name: { type: 'string' }, count: { type: 'integer' } },
+              required: ['id', 'name', 'count', 'from', 'to'],
+              properties: {
+                id: { type: 'string' },
+                name: { type: 'string' },
+                count: { type: 'integer' },
+                from: { type: 'string' },
+                to: { type: 'string' },
+              },
             },
           },
           404: errorSchema,
@@ -273,6 +321,8 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
       movesDone: deps.queue.counts('move').done, // for the Storage Template reminder
       // Moves copied and linked, waiting for Immich to make the family copy's thumbnails.
       processingThumbnails: deps.queue.unfinishedAtStep('linked'),
+      // Pending after a transient failure, tried again on their own.
+      retrying: deps.queue.retrying(),
       failed: failed.map((f) => ({
         id: f.id,
         kind: f.kind,
@@ -285,6 +335,70 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
       worker: deps.worker.state(),
     };
   });
+
+  // The queue page: 1 page of a section, each job with the asset to show for it.
+  app.get<{ Querystring: { section: Section; after?: number; onlyFailures?: boolean } }>(
+    '/api/jobs/list',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          required: ['section'],
+          additionalProperties: false,
+          properties: {
+            section: { type: 'string', enum: ['active', 'failed', 'done'] },
+            after: { type: 'integer', minimum: 0 },
+            onlyFailures: { type: 'boolean' },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            required: ['jobs', 'next'],
+            properties: { jobs: { type: 'array', items: listedJobSchema }, next: nullable('integer') },
+          },
+        },
+      },
+    },
+    async (req) => {
+      const { section, after, onlyFailures } = req.query;
+      const page = deps.queue.list(section, { after, onlyFailures });
+      // A member's asset: it exists through every step, while a given-back family copy is deleted.
+      const thumbOf = (j: ListedJob) => (j.kind === 'giveback' ? (j.originals?.[0] ?? j.sourceAssetId) : j.sourceAssetId);
+      const names = await deps.immich.fileNames(page.jobs.map(thumbOf));
+      return {
+        next: page.next,
+        jobs: page.jobs.map((j) => ({ ...j, thumbAssetId: thumbOf(j), fileName: names.get(thumbOf(j)) ?? null })),
+      };
+    },
+  );
+
+  app.get<{ Params: { id: number } }>(
+    '/api/jobs/:id/events',
+    {
+      schema: {
+        params: jobParams,
+        response: {
+          200: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['at', 'type', 'step'],
+              properties: {
+                at: { type: 'string' },
+                type: { type: 'string' },
+                step: { type: 'string' },
+                message: nullable('string'),
+                by: nullable('string'),
+              },
+            },
+          },
+          404: errorSchema,
+        },
+      },
+    },
+    async (req, reply) => deps.queue.events(req.params.id) ?? reply.code(404).send({ error: 'no such job' }),
+  );
 
   // No new writes while the guard fails (or before its first check).
   const writable = async (_req: FastifyRequest, reply: FastifyReply) => {
@@ -337,10 +451,10 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
     '/api/jobs/:id/retry',
     {
       preHandler: writable,
-      schema: { params: { type: 'object', required: ['id'], properties: { id: { type: 'integer', minimum: 1 } } } },
+      schema: { params: jobParams },
     },
     async (req, reply) => {
-      if (!deps.queue.retry(req.params.id)) return reply.code(404).send({ error: 'no failed job with that id' });
+      if (!deps.queue.retry(req.params.id, req.user?.email ?? null)) return reply.code(404).send({ error: 'no failed job with that id' });
       req.log.info({ by: req.user?.email ?? null, job: req.params.id }, 'retry requested');
       deps.worker.kick();
       return reply.code(202).send({ retried: req.params.id });
@@ -361,6 +475,10 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
     async (req, reply) => {
       const local = await deps.immich.mediaFile(req.params.id, req.params.kind);
       if (!local) return reply.code(404).send({ error: 'no such media' });
+      // Not made yet: the page shows that Immich is making it, and asks again (public/thumb.js).
+      if (local === 'pending') {
+        return reply.code(503).headers({ 'retry-after': '5', 'cache-control': 'no-store' }).send({ error: 'Immich is still making it' });
+      }
       // Range (video seeking), content type, ETag and Last-Modified come from @fastify/send.
       return reply.sendFile(basename(local), dirname(local), { maxAge: '1h', cacheControl: true });
     },
@@ -379,6 +497,7 @@ function cspDirectives() {
     defaultSrc: ["'none'"],
     scriptSrc: ["'self'", `'sha256-${hash}'`],
     styleSrc: ["'self'"],
+    fontSrc: ["'self'"],
     imgSrc: ["'self'"],
     mediaSrc: ["'self'"],
     connectSrc: ["'self'"],

@@ -41,7 +41,7 @@ test('advance records step and copy; fail/retry; failed list', () => {
   const [f] = q.failed();
   assert.deepEqual({ ...f, updatedAt: undefined }, {
     id: a.id, kind: 'move', sourceAssetId: 'a', memberId: M, status: 'failed', step: 'copied',
-    familyAssetId: 'fam-a', originals: ['a', 'a2'], familyIds: null, error: 'asset is in the trash', waitingSince: null,
+    familyAssetId: 'fam-a', originals: ['a', 'a2'], familyIds: null, error: 'asset is in the trash', waitingSince: null, attempts: 0, retryAt: null,
     updatedAt: undefined,
   });
   assert.equal(q.retry(a.id), true);
@@ -174,9 +174,113 @@ test('a queue file from the previous version is migrated with its jobs', () => {
     old.close();
     const q = openQueue(path);
     const a = q.claimNext()!;
-    assert.deepEqual([a.sourceAssetId, a.step, a.waitingSince], ['a', 'archived', null]);
+    assert.deepEqual([a.sourceAssetId, a.step, a.waitingSince, a.attempts, a.retryAt], ['a', 'archived', null, 0, null]);
+    assert.deepEqual(q.events(a.id), [], 'no history from before');
     q.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- automatic retries and history ----------------------------------------------------------------
+test('retryLater: pending again, not claimed before it is due, attempts counted; a step done resets them', () => {
+  const q = openQueue(':memory:');
+  q.enqueue('move', ['a'], { memberId: M });
+  const a = q.claimNext()!;
+  q.retryLater(a.id, 'Immich POST /assets: fetch failed', new Date(Date.now() + 60_000));
+  assert.equal(q.claimNext(), null, 'not due yet');
+  assert.equal(q.retrying(), 1);
+  assert.match(q.nextRetryAt()!, /^\d{4}-\d{2}-\d{2}T/);
+  q.retryLater(a.id, 'again', new Date(Date.now() - 1));
+  const again = q.claimNext()!;
+  assert.deepEqual([again.id, again.attempts, again.retryAt, again.error], [a.id, 2, null, 'again']);
+  assert.equal(q.retrying(), 0);
+  q.advance(a.id, { step: 'copied' });
+  q.fail(a.id, 'x');
+  assert.equal(q.failed()[0]!.attempts, 0);
+});
+
+test('retry (by the curator): attempts and retry time start afresh', () => {
+  const q = openQueue(':memory:');
+  q.enqueue('move', ['a'], { memberId: M });
+  const a = q.claimNext()!;
+  q.retryLater(a.id, 'boom', new Date(Date.now() - 1));
+  q.claimNext();
+  q.fail(a.id, 'boom');
+  q.retry(a.id, 'curator@x');
+  const again = q.claimNext()!;
+  assert.deepEqual([again.attempts, again.retryAt], [0, null]);
+});
+
+test('events: every change of a job is in its history, kept after it is done', () => {
+  const q = openQueue(':memory:');
+  q.enqueue('move', ['a'], { memberId: M, requestedBy: 'curator@x' });
+  const a = q.claimNext()!;
+  q.advance(a.id, { step: 'copied', familyAssetId: 'fam-a', originals: ['a'] });
+  q.retryLater(a.id, 'Immich PUT /assets: no answer in 30 s', new Date(Date.now() - 1));
+  q.claimNext();
+  q.fail(a.id, 'not linked: file not found');
+  q.retry(a.id, 'curator@x');
+  q.resetRunning(); // nothing running: no 'resumed'
+  q.claimNext();
+  q.resetRunning(); // a restart while it runs
+  q.claimNext();
+  q.advance(a.id, { step: 'linked' });
+  q.wait(a.id);
+  q.wait(a.id); // a 2nd wait adds nothing
+  q.advance(a.id, { step: 'thumbnailed', done: true });
+  assert.deepEqual(
+    q.events(a.id)!.map((e) => [e.type, e.step, e.message, e.by]),
+    [
+      ['queued', 'queued', null, 'curator@x'],
+      ['step', 'copied', null, null],
+      ['retrying', 'copied', 'Immich PUT /assets: no answer in 30 s', null],
+      ['failed', 'copied', 'not linked: file not found', null],
+      ['retried', 'copied', null, 'curator@x'],
+      ['resumed', 'copied', 'picker restarted', null],
+      ['step', 'linked', null, null],
+      ['waiting', 'linked', null, null],
+      ['done', 'thumbnailed', null, null],
+    ],
+  );
+  assert.equal(q.events(999), null, 'unknown job');
+});
+
+test('list: sections, pages, and done jobs that ever failed', () => {
+  const q = openQueue(':memory:');
+  q.enqueue('move', ['a', 'b', 'c', 'd', 'e'], { memberId: M, requestedBy: 'curator@x' });
+  const [a, b, c] = [q.claimNext()!, q.claimNext()!, q.claimNext()!];
+  q.advance(a.id, { step: 'thumbnailed', done: true });
+  q.retryLater(b.id, 'fetch failed', new Date(Date.now() - 1));
+  assert.equal(q.claimNext()!.id, b.id, 'due, and older than d');
+  q.advance(b.id, { step: 'thumbnailed', done: true });
+  q.fail(c.id, 'asset is in the trash');
+
+  assert.deepEqual(q.list('failed').jobs.map((j) => [j.sourceAssetId, j.error, j.failures]), [['c', 'asset is in the trash', 1]]);
+  assert.deepEqual(q.list('active').jobs.map((j) => [j.sourceAssetId, j.status, j.requestedBy]), [
+    ['d', 'pending', 'curator@x'],
+    ['e', 'pending', 'curator@x'],
+  ]);
+  assert.deepEqual(q.list('done').jobs.map((j) => [j.sourceAssetId, j.failures]), [['b', 1], ['a', 0]], 'newest first');
+  assert.deepEqual(q.list('done', { onlyFailures: true }).jobs.map((j) => j.sourceAssetId), ['b']);
+
+  const p1 = q.list('active', { limit: 1 });
+  assert.deepEqual([p1.jobs.map((j) => j.sourceAssetId), p1.next], [['d'], p1.jobs[0]!.id]);
+  const p2 = q.list('active', { limit: 1, after: p1.next! });
+  assert.deepEqual([p2.jobs.map((j) => j.sourceAssetId), p2.next], [['e'], null]);
+  const d1 = q.list('done', { limit: 1 });
+  assert.deepEqual(q.list('done', { limit: 1, after: d1.next! }).jobs.map((j) => j.sourceAssetId), ['a']);
+});
+
+test('prune: only done jobs changed before the cutoff go, with their history', () => {
+  const q = openQueue(':memory:');
+  q.enqueue('move', ['a', 'b', 'c'], { memberId: M });
+  const [a, b] = [q.claimNext()!, q.claimNext()!];
+  q.advance(a.id, { step: 'thumbnailed', done: true });
+  q.fail(b.id, 'boom');
+  assert.equal(q.prune(new Date(Date.now() - 60_000)), 0, 'nothing that old');
+  assert.equal(q.prune(new Date(Date.now() + 60_000)), 1, 'only the done one');
+  assert.equal(q.events(a.id), null);
+  assert.deepEqual(q.counts(), { pending: 1, running: 0, done: 0, failed: 1 });
+  assert.equal(q.events(b.id)!.length, 2);
 });

@@ -16,7 +16,7 @@ export function fakeImmich(data: {
   members?: Member[];
   timelines?: Record<string, GridItem[]>; // by owner id (FAMILY_ID for the family's)
   albums?: Record<string, Album[]>; // by member id
-  media?: Record<string, string>; // `${assetId}/${kind}` → local path
+  media?: Record<string, string>; // `${assetId}/${kind}` → local path, or 'pending' (not made yet)
   names?: Record<string, string>;
   ping?: { db: string; api: string };
   down?: Error; // every read throws it

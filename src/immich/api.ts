@@ -24,7 +24,8 @@ export type MetadataPatch = {
 };
 
 export type ImmichApi = {
-  getServerVersion(): Promise<ServerVersion>;
+  // timeoutMs: default 5 s.
+  getServerVersion(timeoutMs?: number): Promise<ServerVersion>;
   // The family account's user id (the key acts as it; needs user.read).
   getMyUserId(): Promise<string>;
   // 'duplicate' = the family account already has these bytes; id is then that asset.
@@ -38,6 +39,7 @@ export type ImmichApi = {
   deleteAssets(assetIds: string[]): Promise<void>;
 };
 
+/** A failed Immich API call; status 0 = no HTTP answer (network error or timeout). */
 export class ImmichError extends Error {
   readonly status: number;
   constructor(message: string, status: number) {
@@ -45,6 +47,14 @@ export class ImmichError extends Error {
     this.name = 'ImmichError';
     this.status = status;
   }
+}
+
+// fetch says only "fetch failed"; the reason (connection reset, refused, closed…) is its cause.
+function networkReason(err: unknown, timeoutMs: number): string {
+  const e = err as Error & { cause?: { code?: string; message?: string } };
+  if (e.name === 'TimeoutError') return `no answer in ${Math.round(timeoutMs / 1000)} s`;
+  const detail = [e.cause?.code, e.cause?.message].filter((x) => x && x !== e.message).join(' ');
+  return detail ? `${e.message} (${detail})` : e.message;
 }
 
 export function createImmichApi(
@@ -55,24 +65,27 @@ export function createImmichApi(
   const call = async (method: string, path: string, body?: BodyInit, opts: { json?: boolean; timeoutMs?: number } = {}) => {
     const headers: Record<string, string> = { 'x-api-key': apiKey, accept: 'application/json' };
     if (opts.json) headers['content-type'] = 'application/json';
-    const res = await fetchFn(`${apiUrl}${path}`, {
-      method,
-      headers,
-      body,
-      signal: AbortSignal.timeout(opts.timeoutMs ?? 5000),
-    });
+    const timeoutMs = opts.timeoutMs ?? 5000;
+    const where = `Immich ${method} ${path}`;
+    let res: Response;
+    let text: string;
+    try {
+      res = await fetchFn(`${apiUrl}${path}`, { method, headers, body, signal: AbortSignal.timeout(timeoutMs) });
+      text = await res.text();
+    } catch (err) {
+      throw new ImmichError(`${where}: ${networkReason(err, timeoutMs)}`, 0);
+    }
     if (!res.ok) {
       // Immich's error body is a short JSON message; never contains the key.
-      const text = (await res.text().catch(() => '')).slice(0, 300);
-      throw new ImmichError(`Immich ${method} ${path} → HTTP ${res.status}${text ? `: ${text}` : ''}`, res.status);
+      const short = text.slice(0, 300);
+      throw new ImmichError(`${where} → HTTP ${res.status}${short ? `: ${short}` : ''}`, res.status);
     }
-    const text = await res.text();
     return text ? (JSON.parse(text) as unknown) : undefined;
   };
 
   return {
-    async getServerVersion() {
-      const v = (await call('GET', '/server/version')) as Partial<ServerVersion>;
+    async getServerVersion(timeoutMs) {
+      const v = (await call('GET', '/server/version', undefined, { timeoutMs })) as Partial<ServerVersion>;
       if (typeof v.major !== 'number' || typeof v.minor !== 'number' || typeof v.patch !== 'number') {
         throw new Error('Immich GET /server/version → unexpected body');
       }

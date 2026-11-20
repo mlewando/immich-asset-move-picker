@@ -51,3 +51,22 @@ _Avoid_: dedup, symlink
 recorded, so a failure or restart resumes where it stopped. A move's last step waits for Immich
 to make the family copy's thumbnails (shown as "processing thumbnails"), without holding up other
 jobs.
+
+**Job history**:
+Everything that happened to 1 job, oldest first: queued (by whom), each step done, waits,
+failures, retries, resumes after a restart. Kept after the job is done, for a set number of days.
+_Avoid_: log (the app's own log lines are a different thing)
+
+**Transient failure**:
+A failure that usually passes on its own: Immich not answering or restarting, a dropped
+connection, a file that Storage Template Migration moved meanwhile. The job is tried again on its
+own a few times (an **automatic retry**) before it fails.
+_Avoid_: flaky, temporary error
+
+**Failed** (job):
+A job that stopped and waits for the curator's **Retry**: a refusal (e.g. the photo is in the
+trash), or a transient failure that kept failing. Retry starts the automatic retries afresh.
+
+**Queue page**:
+The picker's page listing every job (failed, in progress, done) with its photo, state and job
+history.

@@ -1,13 +1,13 @@
 // Timeline grid: days, tiles, badges, drag-select.
 // Click a tile = select it (shift-click = range); the magnifier corner (bottom-right third)
-// opens the viewer. A tile that can't be selected (family "no origin") opens on click instead.
+// opens the viewer. The magnifier shows on hover, or always on a touch screen (no hover there). A tile that can't be selected (family "no origin") opens on click instead.
 import { Component, h } from 'preact';
 import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
 import { media } from './api.js';
 import { CheckCircle, Icon } from './icons.js';
 import { applyMarquee, groupByDay, rectsIntersect } from './selection.js';
-import { expiry } from './expiry.js';
+import { Thumb } from './thumb.js';
 
 const html = htm.bind(h);
 
@@ -57,7 +57,7 @@ class Tile extends Component {
     const src = large ? media.preview(item.id) : media.thumbnail(item.id);
     return html`
       <div
-        class=${`tile group relative aspect-square overflow-hidden ${selected ? 'bg-neutral-800' : 'bg-neutral-900'}`}
+        class=${`tile group relative aspect-square overflow-hidden${selected ? 'bg-neutral-800' : 'bg-neutral-900'}`}
         data-id=${item.id}
         data-selectable=${selectable ? '1' : '0'}
       >
@@ -68,14 +68,12 @@ class Tile extends Component {
           title=${item.fileName}
           onClick=${(e) => (selectable ? onSelect(index, e.shiftKey) : onOpen(item.id))}
         >
-          <img
+          <${Thumb}
             src=${src}
-            alt=""
             loading="lazy"
             decoding="async"
             draggable=${false}
-            onError=${expiry.check}
-            class=${`size-full object-cover transition-[scale,border-radius] duration-200 ease-out ${selected ? 'scale-[0.86] rounded-xl' : 'scale-100 rounded-none'}`}
+            class=${`size-full transition-[scale] duration-200 ease-out ${selected ? 'scale-[0.86]' : 'scale-100'}`}
           />
         </button>
 
@@ -95,7 +93,7 @@ class Tile extends Component {
           title="Open"
           onClick=${() => onOpen(item.id)}
         >
-          <span class="rounded-full bg-black/55 p-1.5 text-white opacity-0 shadow-sm backdrop-blur-sm transition-[opacity,scale,background-color,color] duration-150 group-hover:opacity-100 group-hover/zoom:scale-115 group-hover/zoom:bg-white group-hover/zoom:text-neutral-900 group-focus-visible/zoom:opacity-100 group-focus-visible/zoom:ring-2 group-focus-visible/zoom:ring-sky-400">
+          <span class="rounded-full bg-black/55 p-1.5 text-white opacity-0 shadow-sm backdrop-blur-sm transition-[opacity,scale,background-color,color] duration-150 group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-hover/zoom:scale-115 group-hover/zoom:bg-white group-hover/zoom:text-neutral-900 group-focus-visible/zoom:opacity-100 group-focus-visible/zoom:ring-2 group-focus-visible/zoom:ring-sky-400">
             <${Icon} name="magnify" class="size-4" />
           </span>
         </button>
@@ -198,11 +196,18 @@ function useMarquee(wrapRef, selected, setSelected) {
   return { box, onPointerDown, onClickCapture };
 }
 
-export function Grid({ items, selected, setSelected, isSelectable, tileSize, onSelect, onDay, onOpen }) {
+/** empty: what to say when there are no items (title, hint). */
+export function Grid({ items, selected, setSelected, isSelectable, tileSize, onSelect, onDay, onOpen, empty }) {
   const groups = useMemo(() => groupByDay(items), [items]);
   const wrapRef = useRef(null);
   const { box, onPointerDown, onClickCapture } = useMarquee(wrapRef, selected, setSelected);
-  if (items.length === 0) return html`<p class="py-16 text-center text-neutral-500">No photos here.</p>`;
+  if (items.length === 0) {
+    return html`<div class="flex flex-col items-center gap-2 py-20 text-center">
+      <span class="grid size-14 place-items-center rounded-full bg-white/5 text-neutral-500"><${Icon} name="album" class="size-7" /></span>
+      <p class="text-base font-medium text-neutral-300">${empty?.[0] ?? 'No photos here'}</p>
+      ${empty?.[1] && html`<p class="max-w-sm text-sm text-neutral-500">${empty[1]}</p>`}
+    </div>`;
+  }
   // Immich's thumbnails are ~250 px; bigger tiles use the preview so they stay sharp.
   const large = tileSize > 240;
   return html`
@@ -238,7 +243,7 @@ export function Grid({ items, selected, setSelected, isSelectable, tileSize, onS
                     <span class="text-xs font-normal text-neutral-500">${entries.length}</span>
                   </span>`}
             </h2>
-            <div class="grid grid-cols-[repeat(auto-fill,minmax(var(--tile),1fr))] gap-0.5">
+            <div class="grid grid-cols-[repeat(auto-fill,minmax(min(var(--tile),30vw),1fr))] gap-1">
               ${entries.map(
                 ({ item, index }) => html`<${Tile}
                   key=${item.id}

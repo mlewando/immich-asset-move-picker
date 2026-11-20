@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { checkGuard } from '../src/immich/guard.ts';
+import { ImmichError } from '../src/immich/api.ts';
+import { checkGuard, VERSION_RECHECK_MS } from '../src/immich/guard.ts';
 import { fakeApi, fakeDb, healthySchema } from './fakes.ts';
 
 for (const [major, minor, patch] of [[3, 4, 1]]) {
@@ -25,6 +26,24 @@ for (const [major, minor, patch] of [[3, 3, 5], [3, 3, 6], [3, 4, 0], [3, 4, 2],
 test('Immich unreachable → not ok', async () => {
   const r = await checkGuard({ api: fakeApi(new Error('fetch failed')), db: fakeDb() });
   assert.deepEqual(r.problems, ['Immich version check failed: fetch failed']);
+});
+
+test('Immich slow to answer: asked once more with a longer timeout before going read-only', async () => {
+  const timeouts: (number | undefined)[] = [];
+  const slowOnce = {
+    async getServerVersion(timeoutMs?: number) {
+      timeouts.push(timeoutMs);
+      if (timeouts.length === 1) throw new ImmichError('Immich GET /server/version: no answer in 5 s', 0);
+      return { major: 3, minor: 4, patch: 1 };
+    },
+  };
+  const r = await checkGuard({ api: slowOnce, db: fakeDb() });
+  assert.deepEqual([r.ok, timeouts], [true, [undefined, VERSION_RECHECK_MS]]);
+
+  const down = { getServerVersion: async () => Promise.reject(new ImmichError('Immich GET /server/version: no answer in 15 s', 0)) };
+  assert.deepEqual((await checkGuard({ api: down, db: fakeDb() })).problems, [
+    'Immich version check failed: Immich GET /server/version: no answer in 15 s',
+  ]);
 });
 
 test('renamed column or missing grant → not ok, names the columns', async () => {

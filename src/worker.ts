@@ -1,13 +1,20 @@
 // The in-process worker: runs queued jobs (moves and give backs) 1 at a time. Before each job it
 // re-runs the upgrade guard; a failed guard pauses the worker until the next kick.
-import type { GuardResult, Immich } from './immich/index.ts';
+import { isTransient, transient, type GuardResult, type Immich } from './immich/index.ts';
 import type { Job, Queue } from './queue.ts';
+
+/**
+ * A transient failure (see isTransient: Immich not answering or restarting, a file moved by
+ * Storage Template Migration) is tried again on its own after these delays; once they run out the
+ * job fails and waits for Retry. Every step is safe to repeat.
+ */
+export const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
 
 export type JobDeps = {
   queue: Queue;
   immich: Pick<
     Immich,
-    'copyToFamily' | 'archive' | 'linkToFamily' | 'missingThumbnails' | 'prepareGiveBack' | 'restore' | 'deleteFromFamily'
+    'copyToFamily' | 'albumsOf' | 'archive' | 'linkToFamily' | 'missingThumbnails' | 'prepareGiveBack' | 'restore' | 'deleteFromFamily'
   >;
 };
 
@@ -41,7 +48,10 @@ export async function runMove(deps: JobDeps, job: Job): Promise<'done' | 'waitin
     const copy = await deps.immich.copyToFamily(job.sourceAssetId);
     step = 'copied';
     originals = copy.originals;
-    deps.queue.advance(job.id, { step, familyAssetId: copy.familyAssetId, originals });
+    // Only for the history: the family copy is not put into the member's albums.
+    const albums = await deps.immich.albumsOf(originals);
+    const note = albums.length ? `In album${albums.length > 1 ? 's' : ''}: ${albums.join(', ')}` : undefined;
+    deps.queue.advance(job.id, { step, familyAssetId: copy.familyAssetId, originals, note });
   }
   // `originals` is recorded together with 'copied', so it is set from here on. The fallback (just
   // the asset itself) only covers a row advanced without it, as the resume tests do.
@@ -58,8 +68,11 @@ export async function runMove(deps: JobDeps, job: Job): Promise<'done' | 'waitin
     const results = await deps.immich.linkToFamily(originals ?? [job.sourceAssetId]);
     const mismatches = results.filter((r) => r.result === 'mismatch').length;
     if (mismatches) deps.queue.bump(LINK_MISMATCH, mismatches);
-    const problems = results.flatMap((r) => (r.result === 'mismatch' || r.result === 'failed' ? [`not linked: ${r.reason}`] : []));
-    if (problems.length) throw new Error([...new Set(problems)].join('; '));
+    const problems = results.flatMap((r) => (r.result === 'mismatch' || r.result === 'failed' ? [r] : []));
+    if (problems.length) {
+      const err = new Error([...new Set(problems.map((r) => `not linked: ${r.reason}`))].join('; '));
+      throw problems.every((r) => r.result === 'failed' && r.transient) ? transient(err) : err;
+    }
     step = 'linked';
     deps.queue.advance(job.id, { step });
   }
@@ -154,9 +167,12 @@ export function createWorker(
     onChange?: () => void;
     /** How often waiting moves are checked against Immich (default 30 s). */
     waitCheckMs?: number;
+    /** Delays before trying a transient failure again (default RETRY_DELAYS_MS). */
+    retryDelaysMs?: number[];
   },
 ): Worker {
   const waitCheckMs = deps.waitCheckMs ?? 30_000;
+  const retryDelays = deps.retryDelaysMs ?? RETRY_DELAYS_MS;
   let running: Promise<void> | null = null;
   let again = false;
   let paused = false;
@@ -189,8 +205,17 @@ export function createWorker(
         else deps.log.info(`${job.kind} ${job.id} done: ${job.sourceAssetId}`);
       } catch (err) {
         const message = (err as Error).message;
-        deps.log.error(`${job.kind} ${job.id} failed: ${message}`);
-        deps.queue.fail(job.id, message);
+        const delay = isTransient(err) ? retryDelays[job.attempts] : undefined;
+        if (delay !== undefined) {
+          const at = new Date(Date.now() + delay);
+          deps.log.error(
+            `${job.kind} ${job.id} failed (try ${job.attempts + 1} of ${retryDelays.length + 1}), trying again at ${at.toISOString()}: ${message}`,
+          );
+          deps.queue.retryLater(job.id, message, at);
+        } else {
+          deps.log.error(`${job.kind} ${job.id} failed: ${message}`);
+          deps.queue.fail(job.id, message);
+        }
       }
       deps.onChange?.();
     }
@@ -218,18 +243,20 @@ export function createWorker(
     });
   };
 
-  // While moves wait for thumbnails, come back for the next check. A paused worker waits for
-  // the periodic kick instead.
+  // While moves wait for thumbnails, come back for the next check; while jobs wait to be tried
+  // again, come back when the first is due. A paused worker waits for the periodic kick instead.
   const scheduleWake = (): void => {
     clearTimeout(wakeTimer);
     if (paused) return;
-    let waiting = 0;
+    const delays: number[] = [];
     try {
-      waiting = deps.queue.unfinishedAtStep('linked');
+      if (deps.queue.unfinishedAtStep('linked')) delays.push(waitCheckMs - (Date.now() - lastCheck));
+      const due = deps.queue.nextRetryAt();
+      if (due) delays.push(Date.parse(due) - Date.now());
     } catch {
       return;
     }
-    if (waiting) wakeTimer = setTimeout(kick, Math.max(1000, waitCheckMs - (Date.now() - lastCheck))).unref();
+    if (delays.length) wakeTimer = setTimeout(kick, Math.max(1000, Math.min(...delays))).unref();
   };
 
   return {

@@ -12,6 +12,7 @@ import * as catalog from './catalog.ts';
 import type { Album, GridItem, MediaKind, Member, TimelineFilter } from './catalog.ts';
 import { copyToFamily, sqlCopyDeps, type CopyResult } from './copy.ts';
 import { createDb } from './db.ts';
+import { transient } from './errors.ts';
 import { checkGuard, type GuardResult } from './guard.ts';
 import { deleteFromFamily, prepareGiveBack, type GiveBackPlan } from './giveback.ts';
 import { linkToFamily, sqlLinkPairs, type LinkResult } from './link.ts';
@@ -21,6 +22,7 @@ import { setVisibility, type VisibilityResult } from './visibility.ts';
 
 export type { Album, GridItem, MediaKind, Member, TimelineFilter } from './catalog.ts';
 export type { CopyResult } from './copy.ts';
+export { isTransient, transient } from './errors.ts';
 export type { GiveBackPlan } from './giveback.ts';
 export type { LinkResult } from './link.ts';
 export type { GuardResult } from './guard.ts';
@@ -36,10 +38,15 @@ export type Immich = {
   memberAlbums(memberId: string): Promise<Album[]>;
   /** The family account's timeline; each item says whether it has an original to give back to. */
   familyTimeline(): Promise<GridItem[]>;
-  /** Local path of an asset's file to show, or null (unknown, locked, trashed, missing on disk). */
-  mediaFile(assetId: string, kind: MediaKind): Promise<string | null>;
+  /**
+   * Local path of an asset's file to show; 'pending' for a thumbnail or preview Immich is still to
+   * make (a new upload); null when unknown, locked, trashed or missing on disk.
+   */
+  mediaFile(assetId: string, kind: MediaKind): Promise<string | 'pending' | null>;
   /** Original file names, for messages (unknown ids are left out). */
   fileNames(assetIds: string[]): Promise<Map<string, string>>;
+  /** Names of the albums (anyone's) holding any of these assets, sorted. */
+  albumsOf(assetIds: string[]): Promise<string[]>;
   /**
    * Give back, 1st step: for a family asset (a stack by its primary), the family files to delete
    * and the originals to restore. Refuses when any family file has no copy in a member's account:
@@ -106,9 +113,10 @@ export function createImmich(cfg: {
     try {
       return await openAsBlob(local);
     } catch (err) {
-      // E.g. Storage Template Migration moved it meanwhile: Retry re-reads the path from the DB.
+      // E.g. Storage Template Migration moved it meanwhile: a retry re-reads the path from the DB.
       const code = (err as NodeJS.ErrnoException).code;
-      throw new Error(`original file not readable (${code ?? (err as Error).message}): ${local}`);
+      const e = new Error(`original file not readable (${code ?? (err as Error).message}): ${local}`);
+      throw code === 'ENOENT' ? transient(e) : e;
     }
   };
   const copyDeps = { ...sqlCopyDeps(db), familyId, openFile, api };
@@ -120,7 +128,7 @@ export function createImmich(cfg: {
     familyTimeline: async () => catalog.familyTimeline(db, await familyId()),
     async mediaFile(assetId, kind) {
       const immichPath = await catalog.mediaPath(db, assetId, kind);
-      if (!immichPath) return null;
+      if (!immichPath || immichPath === 'pending') return immichPath;
       const local = mapImmichPath(immichPath, cfg.library);
       if (!local) {
         log.error(`media ${assetId}: Immich path outside the mapped library: ${immichPath}`);
@@ -135,6 +143,7 @@ export function createImmich(cfg: {
       return local;
     },
     fileNames: (ids) => catalog.fileNames(db, ids),
+    albumsOf: (ids) => catalog.albumsOf(db, ids),
 
     copyToFamily: (assetId) => copyToFamily(copyDeps, assetId),
     archive: (ids) => setVisibility(db, ids, 'archive'),

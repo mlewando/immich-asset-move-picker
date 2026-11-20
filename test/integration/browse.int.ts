@@ -71,10 +71,16 @@ test("Anna's timeline: timeline only, 1 entry per stack, badges", async () => {
 
 test("Anna's albums and the album filter: a stack shows when any member is in the album", async () => {
   const anna = (await get<Member[]>('/api/members')).find((m) => m.email === 'anna@example.test')!;
-  const albums = await get<{ id: string; name: string; count: number }[]>(`/api/members/${anna.id}/albums`);
+  const albums = await get<{ id: string; name: string; count: number; from: string; to: string }[]>(`/api/members/${anna.id}/albums`);
   assert.deepEqual(albums.map((a) => [a.name, a.count]), [['Summer trip', 3]]);
+  assert.match(albums[0]!.from, /^\d{4}-\d{2}-\d{2}$/);
+  assert.ok(albums[0]!.from <= albums[0]!.to);
   const items = await get<GridItem[]>(`/api/members/${anna.id}/assets?album=${albums[0]!.id}`);
   assert.deepEqual(items.map((i) => i.fileName).sort(), ['burst-1.jpg', 'photo-1.jpg', 'photo-2.jpg']);
+  // A move's history names these (albumsOf).
+  const m = byName(await get<GridItem[]>(`/api/members/${anna.id}/assets`));
+  assert.deepEqual(await immich.albumsOf([m.get('photo-1.jpg')!.id, m.get('photo-3.jpg')!.id]), ['Summer trip']);
+  assert.deepEqual(await immich.albumsOf([m.get('photo-3.jpg')!.id]), []);
   const bob = (await get<Member[]>('/api/members')).find((m) => m.email === 'bob@example.test')!;
   assert.deepEqual(await get(`/api/members/${bob.id}/albums`), []);
 });

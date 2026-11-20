@@ -44,6 +44,17 @@ test('valid env → config with contract defaults', () => {
   assert.deepEqual(c.auth?.allowedGroups, ['photos-curators', 'admins']);
   assert.equal(c.auth?.idleMs, 30 * 60_000);
   assert.deepEqual(c.tls, { certFile: '/tls/cert.pem', keyFile: '/tls/key.pem' });
+  assert.equal(c.jobHistoryDays, 90);
+});
+
+test('job history: days to keep done jobs, 0 = keep all', () => {
+  assert.equal(loadConfig({ ...valid, PICKER_JOB_HISTORY_DAYS: '30' }).jobHistoryDays, 30);
+  assert.equal(loadConfig({ ...valid, PICKER_JOB_HISTORY_DAYS: '0' }).jobHistoryDays, 0);
+  for (const bad of ['-1', '7d', '1.5']) {
+    assert.deepEqual(problemsOf({ ...valid, PICKER_JOB_HISTORY_DAYS: bad }), [
+      'PICKER_JOB_HISTORY_DAYS must be a whole number of days (0 = keep all)',
+    ]);
+  }
 });
 
 test('the login is on unless PICKER_AUTH=off', () => {

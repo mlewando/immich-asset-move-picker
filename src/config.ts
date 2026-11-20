@@ -14,6 +14,8 @@ export type Config = {
   // The picker's own state: the job queue and the login sessions (SQLite). Not backed up: only
   // work in flight and who is logged in.
   dataDir: string;
+  // Done jobs (with their history) are deleted this many days after they finished; 0 = never.
+  jobHistoryDays: number;
   // null only with PICKER_AUTH=off or off-any-host (local dev): then every request is let in.
   auth: AuthConfig | null;
   tls: { certFile: string; keyFile: string } | null;
@@ -109,6 +111,10 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
   const dataDir = required('PICKER_DATA_DIR');
   if (dataDir && !isAbsolute(dataDir)) problems.push('PICKER_DATA_DIR must be an absolute path');
 
+  const historyRaw = env.PICKER_JOB_HISTORY_DAYS?.trim() || '90';
+  const jobHistoryDays = /^\d+$/.test(historyRaw) ? Number(historyRaw) : NaN;
+  if (Number.isNaN(jobHistoryDays)) problems.push('PICKER_JOB_HISTORY_DAYS must be a whole number of days (0 = keep all)');
+
   // The login is on unless switched off explicitly: a missing setting must never open the app.
   // `off` only listens on loopback, so a dev setting copied to a real host can't open it to the
   // network. `off-any-host` is for a dev container, whose port is published on loopback only.
@@ -163,6 +169,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     library: { mount, subdirs, thumbsDir },
     metricsDir,
     dataDir,
+    jobHistoryDays,
     auth,
     tls,
     healthz,

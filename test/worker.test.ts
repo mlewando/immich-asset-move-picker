@@ -1,7 +1,8 @@
 // The move steps and the worker, over the real (in-memory) SQLite queue and a fake Immich.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { GiveBackPlan, GuardResult, LinkResult, VisibilityResult } from '../src/immich/index.ts';
+import { ImmichError } from '../src/immich/api.ts';
+import { isTransient, type GiveBackPlan, type GuardResult, type LinkResult, type VisibilityResult } from '../src/immich/index.ts';
 import { openQueue, type Queue } from '../src/queue.ts';
 import {
   checkThumbnails, createWorker, LINK_MISMATCH, runGiveBack, runMove, THUMBNAIL_STALL_MS, type JobDeps,
@@ -24,7 +25,12 @@ function fakeImmich(assets: Record<string, string>, units: Record<string, string
   const family = new Set<string>();
   // Originals whose family copy has no thumbnails yet (default: all ready).
   const noThumbs = new Set<string>();
+  // Album names per asset id (default none). Not in `calls`: it only feeds the history.
+  const albums: Record<string, string[]> = {};
   const immich: JobDeps['immich'] = {
+    async albumsOf(ids) {
+      return [...new Set(ids.flatMap((id) => albums[id] ?? []))].sort();
+    },
     async missingThumbnails(ids) {
       calls.push(`thumbs:${ids.join(',')}`);
       return new Set(ids.filter((id) => noThumbs.has(id)));
@@ -79,7 +85,7 @@ function fakeImmich(assets: Record<string, string>, units: Record<string, string
       });
     },
   };
-  return { immich, calls, failNext, assets, links, plans, family, noThumbs };
+  return { immich, calls, failNext, assets, links, plans, family, noThumbs, albums };
 }
 
 function setup(assets: Record<string, string>, units: Record<string, string[]> = {}) {
@@ -103,6 +109,21 @@ test('move: copy, archive, hard link, each step recorded', async () => {
   assert.deepEqual(s.calls, ['copy:a', 'archive:a', 'link:a', 'thumbs:a']);
   assert.equal(s.assets.a, 'archive');
   assert.deepEqual(s.queue.counts(), { pending: 0, running: 0, done: 1, failed: 0 });
+});
+
+test("move: the history names the originals' albums with the copy step", async () => {
+  const s = setup({ p: 'timeline', b: 'timeline', c: 'timeline' }, { p: ['p', 'b'] });
+  s.albums.p = ['Holidays'];
+  s.albums.b = ['Garden', 'Holidays'];
+  const m = claim(s.queue, 'p');
+  await runMove(s.deps, m);
+  const copied = s.queue.events(m.id)!.find((e) => e.type === 'step' && e.step === 'copied');
+  assert.equal(copied?.message, 'In albums: Garden, Holidays');
+
+  const n = claim(s.queue, 'c');
+  await runMove(s.deps, n);
+  const plain = s.queue.events(n.id)!.find((e) => e.type === 'step' && e.step === 'copied');
+  assert.equal(plain?.message, null, 'no albums, no note');
 });
 
 test('stack: every original archived; the list survives a resume', async () => {
@@ -382,4 +403,65 @@ test('worker: runs moves and give backs from the same queue', async () => {
   wk.kick();
   await wk.idle();
   assert.deepEqual([s.queue.counts('move').done, s.queue.counts('giveback').done], [1, 1]);
+});
+
+// --- transient failures ---------------------------------------------------------------------------
+const dropped = () => new ImmichError('Immich POST /assets: fetch failed (UND_ERR_SOCKET other side closed)', 0);
+
+test('worker: a transient failure is tried again on its own; the history keeps it', async () => {
+  const s = setup({ a: 'timeline' });
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER });
+  s.failNext.copyToFamily = dropped();
+  const wk = createWorker({ ...s.deps, guard: async () => ok, log: silent, retryDelaysMs: [0] });
+  wk.kick();
+  await wk.idle();
+  assert.equal(s.queue.counts().done, 1);
+  const [job] = s.queue.list('done').jobs;
+  assert.equal(job!.failures, 1);
+  assert.deepEqual(
+    s.queue.events(job!.id)!.filter((e) => e.type === 'retrying').map((e) => e.message),
+    ['Immich POST /assets: fetch failed (UND_ERR_SOCKET other side closed)'],
+  );
+});
+
+test('worker: a transient failure waits for its delay; after the last one the job fails', async () => {
+  const s = setup({ a: 'timeline' });
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER });
+  s.immich.copyToFamily = async () => {
+    throw dropped();
+  };
+  const wk = createWorker({ ...s.deps, guard: async () => ok, log: silent, retryDelaysMs: [0, 0] });
+  wk.kick();
+  await wk.idle();
+  const failed = row(s.queue)!;
+  assert.match(failed.error!, /fetch failed/);
+  assert.equal(failed.attempts, 2, '1st try + 2 retries');
+
+  // A delay in the future: pending, not claimed until then.
+  s.queue.retry(failed.id);
+  const later = createWorker({ ...s.deps, guard: async () => ok, log: silent, retryDelaysMs: [60_000] });
+  later.kick();
+  await later.idle();
+  assert.deepEqual([s.queue.counts().pending, s.queue.retrying()], [1, 1]);
+});
+
+test('worker: a refusal is not retried', async () => {
+  const s = setup({ a: 'trash' });
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER });
+  const wk = createWorker({ ...s.deps, guard: async () => ok, log: silent, retryDelaysMs: [0] });
+  wk.kick();
+  await wk.idle();
+  assert.equal(row(s.queue)!.attempts, 0);
+});
+
+test('link: a file moved meanwhile is transient, a mismatch is not', async () => {
+  const s = setup({ a: 'timeline' });
+  const m = claim(s.queue, 'a');
+  s.links.a = { id: 'a', path: '/data/upload/a', result: 'failed', reason: 'file not found', transient: true };
+  const moved = await runMove(s.deps, m).catch((e: unknown) => e);
+  assert.equal(isTransient(moved), true);
+
+  s.links.a = { id: 'a', path: '/data/upload/a', result: 'mismatch', reason: 'size differs' };
+  const differs = await runMove(s.deps, { ...m, step: 'archived' }).catch((e: unknown) => e);
+  assert.equal(isTransient(differs), false);
 });

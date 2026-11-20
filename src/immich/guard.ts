@@ -3,6 +3,11 @@
 // The lists below are everything src/immich/ relies on; update them with the queries.
 import type { ImmichApi } from './api.ts';
 import type { Db } from './db.ts';
+import { isTransient } from './errors.ts';
+
+// A busy Immich (e.g. its nightly jobs) may not answer in the usual 5 s: before going read-only,
+// ask once more and wait this long.
+export const VERSION_RECHECK_MS = 15_000;
 
 // Each version tested on its own (integration tests against it), not a semver range: a later
 // patch of an older minor sorts inside a range like "3.3.5 to 3.4.1" but is untested.
@@ -15,7 +20,7 @@ export const EXPECTED_COLUMNS: Record<string, string[]> = {
     'id', 'ownerId', 'type', 'originalPath', 'originalFileName', 'fileCreatedAt', 'fileModifiedAt',
     'localDateTime', 'checksum', 'checksumAlgorithm', 'livePhotoVideoId', 'stackId', 'libraryId',
     'isExternal', 'visibility', 'status', 'deletedAt', 'duplicateId', 'isEdited', 'duration',
-    'width', 'height', 'isOffline',
+    'width', 'height', 'isOffline', 'createdAt',
   ],
   asset_file: ['assetId', 'type', 'path', 'isEdited'],
   asset_exif: [
@@ -62,7 +67,10 @@ export async function checkGuard(deps: {
 
 async function checkVersion(api: Pick<ImmichApi, 'getServerVersion'>, problems: string[]): Promise<void> {
   try {
-    const v = await api.getServerVersion();
+    const v = await api.getServerVersion().catch((err: unknown) => {
+      if (!isTransient(err)) throw err;
+      return api.getServerVersion(VERSION_RECHECK_MS);
+    });
     const actual = `${v.major}.${v.minor}.${v.patch}`;
     if (!SUPPORTED_IMMICH_VERSIONS.includes(actual)) {
       problems.push(`Immich version ${actual} not supported (supported: ${SUPPORTED_IMMICH_VERSIONS.join(', ')})`);

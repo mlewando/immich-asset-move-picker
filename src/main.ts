@@ -107,10 +107,26 @@ const resumed = queue.resetRunning();
 if (resumed) app.log.info(`${resumed} interrupted move(s) back to pending`);
 worker.kick();
 
+// Done jobs' history is kept PICKER_JOB_HISTORY_DAYS (0 = forever): checked on start, then daily.
+const DAY_MS = 24 * 3_600_000;
+let lastPrune = 0;
+const prune = (): void => {
+  if (!config.jobHistoryDays || Date.now() - lastPrune < DAY_MS) return;
+  lastPrune = Date.now();
+  try {
+    const n = queue.prune(new Date(Date.now() - config.jobHistoryDays * DAY_MS));
+    if (n) app.log.info(`${n} done job(s) older than ${config.jobHistoryDays} days removed with their history`);
+  } catch (err) {
+    app.log.error(`pruning job history failed: ${(err as Error).message}`);
+  }
+};
+prune();
+
 // Recover from a paused guard or an unreachable DB/Immich without a restart.
 setInterval(() => {
   worker.kick();
   publishMetrics();
+  prune();
 }, 60_000).unref();
 
 const shutdown = async (signal: string): Promise<void> => {

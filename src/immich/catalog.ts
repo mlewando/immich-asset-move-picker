@@ -38,7 +38,8 @@ type Row = {
   hasOrigin?: boolean;
 };
 
-export type Album = { id: string; name: string; count: number };
+// from/to: the first and last day (YYYY-MM-DD, localDateTime) of the member's photos in it.
+export type Album = { id: string; name: string; count: number; from: string; to: string };
 
 /** Member timeline filter: 1 album, and/or a day range (YYYY-MM-DD, inclusive, localDateTime). */
 export type TimelineFilter = { albumId?: string; from?: string; to?: string };
@@ -114,19 +115,38 @@ export async function memberTimeline(db: Db, memberId: string, familyId: string,
   return rows.map((r) => ({ ...toGridItem(r), inFamily: r.inFamily === true }));
 }
 
-/** Albums (anyone's) holding at least 1 asset of this member's timeline; count = those assets. */
+/**
+ * Albums (anyone's) holding at least 1 asset of this member's timeline; count = those assets.
+ * Newest first, by the member's latest photo in each.
+ */
 export function memberAlbums(db: Db, memberId: string): Promise<Album[]> {
+  const day = (agg: string) => `to_char(${agg}(a."localDateTime" AT TIME ZONE 'UTC'), 'YYYY-MM-DD')`;
   return db.query<Album>(
-    `SELECT al.id, al."albumName" AS name, count(DISTINCT a.id)::int AS count
+    `SELECT al.id, al."albumName" AS name, count(DISTINCT a.id)::int AS count,
+            ${day('min')} AS "from", ${day('max')} AS "to"
        FROM album al
        JOIN album_asset aa ON aa."albumId" = al.id
        JOIN asset a ON a.id = aa."assetId"
       WHERE al."deletedAt" IS NULL AND a."ownerId" = $1
         AND a.visibility = 'timeline' AND a."deletedAt" IS NULL AND a.status = 'active' AND a."libraryId" IS NULL
       GROUP BY al.id, al."albumName"
-      ORDER BY lower(al."albumName"), al.id`,
+      ORDER BY max(a."localDateTime") DESC, lower(al."albumName"), al.id`,
     [memberId],
   );
+}
+
+/** Names of the albums (anyone's) holding any of these assets, sorted. */
+export async function albumsOf(db: Db, assetIds: string[]): Promise<string[]> {
+  if (!assetIds.length) return [];
+  const rows = await db.query<{ name: string }>(
+    `SELECT DISTINCT al."albumName" AS name
+       FROM album al
+       JOIN album_asset aa ON aa."albumId" = al.id
+      WHERE aa."assetId" = ANY($1::uuid[]) AND al."deletedAt" IS NULL
+      ORDER BY name`,
+    [assetIds],
+  );
+  return rows.map((r) => r.name);
 }
 
 export async function familyTimeline(db: Db, familyId: string): Promise<GridItem[]> {
@@ -141,12 +161,19 @@ export async function familyTimeline(db: Db, familyId: string): Promise<GridItem
   return rows.map((r) => ({ ...toGridItem(r), noOrigin: r.hasOrigin !== true }));
 }
 
-/** Immich path of the file to show, or null (unknown/locked/deleted asset, no such file). */
-export async function mediaPath(db: Db, assetId: string, kind: MediaKind): Promise<string | null> {
+// A thumbnail or preview Immich hasn't made this long after the upload never will be (it
+// failed); before that it is still in Immich's job queue.
+const MAKING_WINDOW = '24 hours';
+
+/**
+ * Immich path of the file to show; 'pending' for a thumbnail or preview Immich is still to make
+ * (a new upload); null for an unknown/locked/deleted asset or no such file.
+ */
+export async function mediaPath(db: Db, assetId: string, kind: MediaKind): Promise<string | 'pending' | null> {
   // Any visibility but locked (Immich's PIN-protected folder): archived originals and hidden
   // live-photo videos must still be viewable.
-  const [asset] = await db.query<{ type: string; originalPath: string; isEdited: boolean }>(
-    `SELECT type, "originalPath", "isEdited" FROM asset
+  const [asset] = await db.query<{ type: string; originalPath: string; isEdited: boolean; recent: boolean }>(
+    `SELECT type, "originalPath", "isEdited", "createdAt" > now() - interval '${MAKING_WINDOW}' AS recent FROM asset
       WHERE id = $1 AND "libraryId" IS NULL AND "deletedAt" IS NULL AND status = 'active'
         AND visibility <> 'locked'`,
     [assetId],
@@ -167,7 +194,7 @@ export async function mediaPath(db: Db, assetId: string, kind: MediaKind): Promi
       ORDER BY ("isEdited" = $3) DESC LIMIT 1`,
     [assetId, kind, asset.isEdited],
   );
-  return file?.path ?? null;
+  return file?.path ?? (asset.recent ? 'pending' : null);
 }
 
 export async function fileNames(db: Db, assetIds: string[]): Promise<Map<string, string>> {

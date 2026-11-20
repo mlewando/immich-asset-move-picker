@@ -22,7 +22,8 @@ export type LinkPair = {
 
 export type LinkResult = { id: string; path: string } & (
   | { result: 'linked' | 'already' }
-  | { result: 'mismatch' | 'failed'; reason: string }
+  // transient: a later try may succeed (see isTransient).
+  | { result: 'mismatch' | 'failed'; reason: string; transient?: boolean }
 );
 
 export type LinkDeps = {
@@ -38,7 +39,9 @@ export async function linkToFamily(deps: LinkDeps, originalIds: string[]): Promi
     try {
       out.push({ ...r, ...(await linkPair(deps, p)) });
     } catch (err) {
-      out.push({ ...r, result: 'failed', reason: describe(err, p) });
+      // A file moved meanwhile (Storage Template Migration): the next try reads the new paths.
+      const moved = (err as NodeJS.ErrnoException).code === 'ENOENT';
+      out.push({ ...r, result: 'failed', reason: describe(err, p), ...(moved && { transient: true }) });
     }
   }
   return out;
@@ -85,8 +88,8 @@ function sha1Of(path: string): Promise<Buffer> {
 function describe(err: unknown, p: LinkPair): string {
   const code = (err as NodeJS.ErrnoException).code;
   if (code === 'ENOENT') {
-    // E.g. Storage Template Migration moved it meanwhile: Retry re-reads the paths.
-    return 'file not found (moved by Storage Template Migration? Retry re-reads the paths)';
+    // E.g. Storage Template Migration moved it meanwhile: a retry re-reads the paths.
+    return 'file not found (moved by Storage Template Migration? a retry re-reads the paths)';
   }
   if (code === 'EXDEV') return 'original and family file are on different filesystems (mount the whole library share once)';
   return `${code ?? (err as Error).message} (${p.originalPath})`;

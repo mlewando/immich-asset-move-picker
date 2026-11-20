@@ -68,7 +68,7 @@ test('missing file, no family copy, path outside the library → failed with a r
     ['ignored'],
   );
   assert.deepEqual(results.map((r) => [r.result, 'reason' in r ? r.reason : '']), [
-    ['failed', 'file not found (moved by Storage Template Migration? Retry re-reads the paths)'],
+    ['failed', 'file not found (moved by Storage Template Migration? a retry re-reads the paths)'],
     ['failed', 'no family copy with the same bytes'],
     ['failed', 'file outside the mapped library'],
   ]);

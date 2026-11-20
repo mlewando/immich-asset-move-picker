@@ -13,6 +13,10 @@ big batch may wait hours for Immich's queue; a move fails only when Immich made 
 thumbnails for 30 min (Retry checks again, nothing is moved twice).
 
 Nothing is ever deleted that has no other copy, and every step can be resumed after a failure.
+A failure that usually passes on its own (Immich not answering or restarting, a file moved by
+Storage Template Migration meanwhile) is tried again after 1, 5 and 15 min before the job waits
+for **Retry**. The **Queue** page shows every job with its photo, state and history: each step,
+wait, failure and retry.
 
 > Works only with **Immich v3.4.1**.
 > It writes to Immich's database and library directly, so on any other version (or schema) it
@@ -68,6 +72,7 @@ because it names internal errors.
 | `PICKER_LIBRARY_SUBDIRS` | library subdirectories, e.g. `upload,library,backups,encoded-video` (Immich's `/data/<subdir>/…` → `<mount>/<subdir>/…`) |
 | `PICKER_THUMBS_DIR` | Immich's thumbnails directory (default `/data/thumbs`) |
 | `PICKER_DATA_DIR` | the app's own state: the SQLite job queue and login sessions; no backup needed |
+| `PICKER_JOB_HISTORY_DAYS` | days a done job and its history stay on the Queue page, default `90`; `0` keeps them all |
 | `PICKER_METRICS_DIR` | where to write `immich_picker.prom` |
 | `PICKER_LISTEN` | default `127.0.0.1:2284` |
 | `PICKER_PUBLIC_URL` | where browsers reach the picker, e.g. `https://picker.example.org` |
@@ -102,6 +107,12 @@ npm test            # unit tests
 npm run test:int    # integration tests against the local Immich
 npm run dev:reset   # wipe the local Immich
 ```
+To try the page alone, `npm run dev:ui` serves it on http://127.0.0.1:2285 with made-up
+members, photos and a queue with a job in every state, and no Docker
+([`dev/ui.ts`](dev/ui.ts)). A stand-in worker walks new moves through their steps; some fail
+once and retry, some are refused. http://127.0.0.1:2285/dev lists other scenarios (empty queue,
+empty accounts, long queues, thumbnails Immich is still making, paused, read-only); each link
+starts it afresh.
 To test another Immich version (before adding it to the supported ones), start over with it
 (Immich can't downgrade its database): `npm run dev:reset`, then `export IMMICH_VERSION=v3.4.2`,
 `npm run dev:up`, `npm run dev:seed`, `npm run test:int`.

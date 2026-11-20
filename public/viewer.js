@@ -59,7 +59,7 @@ export function Viewer({ items, index, selected, isSelectable, onClose, onNav, o
         <button class=${roundBtn} onClick=${onClose} aria-label="Close" title="Close (Esc)"><${Icon} name="close" class="size-6" /></button>
         <div class="min-w-0 flex-1">
           <div class="truncate text-sm font-medium text-white">${item.fileName}</div>
-          <div class="text-xs text-neutral-400">${timeLabel(item.localDateTime)} · ${index + 1} of ${items.length}</div>
+          <div class="text-xs text-neutral-400">${timeLabel(item.localDateTime)} • ${index + 1} of ${items.length}</div>
         </div>
         <div class="flex gap-1"><${MediaBadges} item=${item} /><${StatusBadges} item=${item} /></div>
         ${item.livePhotoVideoId &&
