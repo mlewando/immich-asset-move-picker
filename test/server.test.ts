@@ -222,9 +222,9 @@ test('queue page: sections with each job\'s asset and file name; a job\'s histor
 
 // --- read side --------------------------------------------------------------------------------
 test('members are listed; unlisted fields are dropped', async () => {
-  const immich = fakeImmich({ members: [{ id: ANNA, name: 'Anna', email: 'anna@example.test', hasPhotos: true, password: 'leak' } as never] });
+  const immich = fakeImmich({ members: [{ id: ANNA, name: 'Anna', email: 'anna@example.test', hasPhotos: false, password: 'leak' } as never] });
   const res = await call({ immich }, '/api/members');
-  assert.deepEqual(res.json(), [{ id: ANNA, name: 'Anna', email: 'anna@example.test', hasPhotos: true }]);
+  assert.deepEqual(res.json(), [{ id: ANNA, name: 'Anna', email: 'anna@example.test', hasPhotos: false }]);
 });
 
 test('member timeline only for a listed member; never the family account', async () => {

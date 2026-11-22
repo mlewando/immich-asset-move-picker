@@ -268,6 +268,22 @@ test('archive and restore report each asset', async () => {
   assert.equal((await asset(hidden)).visibility, 'hidden', 'hidden live-photo video untouched');
 });
 
+test('a member with every photo archived has no photos (hasPhotos)', async () => {
+  const hasPhotos = async () => (await json<Member[]>('/api/members')).body.find((m) => m.id === bob.id)!.hasPhotos;
+  const onTimeline = (await db.query<{ id: string }>(
+    `SELECT id FROM asset WHERE "ownerId" = $1 AND visibility = 'timeline' AND "deletedAt" IS NULL AND status = 'active'`, [bob.id],
+  )).map((r) => r.id);
+  assert.ok(onTimeline.length > 0, 'Bob still has photos on the timeline');
+  assert.equal(await hasPhotos(), true);
+  await immich.archive(onTimeline);
+  try {
+    assert.equal(await hasPhotos(), false);
+  } finally {
+    await immich.restore(onTimeline);
+  }
+  assert.equal(await hasPhotos(), true);
+});
+
 test('give back: photo, live photo and stack return to the member; family copies gone, files kept', async () => {
   const photo10 = moved['photo-10.jpg']!.id;
   const still = annaIds['live-still.jpg']!;

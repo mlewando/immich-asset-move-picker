@@ -1,7 +1,9 @@
 // Read side: what the grids show, straight from Immich's DB (read-only grants).
 import type { Db } from './db.ts';
 
-// hasPhotos: at least 1 photo on the member's timeline (the page starts on such a member).
+// hasPhotos: at least 1 photo on the member's timeline (the page starts on such a member). It can
+// be true while the grid is empty: every photo waits in an unfinished move, or the only ones are
+// a stack's whose primary is off the timeline.
 export type Member = { id: string; name: string; email: string; hasPhotos: boolean };
 
 export type GridItem = {

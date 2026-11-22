@@ -1,5 +1,6 @@
 // The real page against made-up data: no Docker, no Immich, no Postgres. For trying the UI only.
-//   - Immich: test/fakes.ts' fakeImmich with 2 members, a family timeline, albums and SVG "photos".
+//   - Immich: test/fakes.ts' fakeImmich with 3 members (1 without photos), a family timeline, albums
+//     and SVG "photos".
 //   - Queue: in memory, seeded per scenario (/dev lists them; /dev/scenario/<name> switches).
 //   - Worker: a stand-in that walks queued jobs through their steps every 1.5 s; some fail on
 //     their 1st try (automatic retry after 20 s), some are refused (wait for Retry).
