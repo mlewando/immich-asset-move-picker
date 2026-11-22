@@ -10,7 +10,7 @@ import { Icon } from './icons.js';
 import { keepAlive } from './expiry.js';
 import { JobsIndicator, StorageTemplateReminder, useJobs } from './jobs.js';
 import { QueuePage } from './queue.js';
-import { addRange, toggleDay, toggleOne } from './selection.js';
+import { addRange, fileCount, toggleDay, toggleOne } from './selection.js';
 import { startMember } from './start.js';
 import { Viewer } from './viewer.js';
 
@@ -254,14 +254,14 @@ function Sidebar(props) {
 }
 
 // --- top bar: menu, title + zoom, or the selection actions -----------------------------------
-function TopBar({ title, count, selectedCount, action, tileSize, setTileSize, onClear, onMenu, jobs }) {
+function TopBar({ title, count, selectedCount, selectedFiles, action, tileSize, setTileSize, onClear, onMenu, jobs }) {
   const iconBtn = `grid size-9 shrink-0 place-items-center rounded-full text-neutral-300 hover:bg-white/10 disabled:opacity-30 ${focusRing}`;
   const bar = '@container sticky top-0 z-20 flex h-14 items-center gap-2 border-b border-white/5 px-2 sm:gap-3 sm:px-4';
   if (selectedCount > 0) {
     return html`
       <header class=${`${bar} bg-sky-950`}>
         <button class=${iconBtn} onClick=${onClear} aria-label="Clear selection" title="Clear selection"><${Icon} name="close" /></button>
-        <span class="flex-1 truncate text-sm font-medium">${selectedCount} selected</span>
+        <span class="flex-1 truncate text-sm font-medium">${selectedCount} selected${selectedFiles > selectedCount ? ` • ${selectedFiles} files` : ''}</span>
         ${jobs}
         <button
           class=${`shrink-0 rounded-full bg-sky-500 px-4 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-sky-400 disabled:opacity-40 disabled:hover:bg-sky-500 ${focusRing}`}
@@ -436,14 +436,16 @@ function App() {
       // Queued now or already: either way each has an unfinished job, so it leaves the grid.
       drop(ids);
       // What can't be moved shows up as failed in the jobs indicator (the worker decides).
-      const parts = [`${r.queued} queued`];
+      // The files of what this click queued, when more than its photos (live photos, stacks).
+      const files = fileCount(items, r.queuedIds);
+      const parts = [`${r.queued} queued${files > r.queued ? ` (${files} files)` : ''}`];
       if (r.alreadyQueued) parts.push(`${r.alreadyQueued} already queued`);
       setToast({ kind: 'ok', text: parts.join(' • ') });
       refreshJobs();
     } catch (e) {
       setToast({ kind: 'error', text: e.message });
     }
-  }, [selected, route.kind, route.id, refreshJobs, drop]);
+  }, [selected, items, route.kind, route.id, refreshJobs, drop]);
   const action = {
     label: route.kind === 'family' ? 'Give back' : 'Move to family',
     disabled: readOnly,
@@ -550,6 +552,7 @@ function App() {
           title=${title}
           count=${items && route.kind !== 'queue' ? items.length : null}
           selectedCount=${selected.size}
+          selectedFiles=${selected.size ? fileCount(items ?? [], selected) : 0}
           action=${action}
           tileSize=${tileSize}
           setTileSize=${setTileSize}

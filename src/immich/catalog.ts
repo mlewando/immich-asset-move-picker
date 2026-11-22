@@ -18,6 +18,8 @@ export type GridItem = {
   durationMs: number | null;
   livePhotoVideoId: string | null; // set → LIVE badge; play /media/<this>/video
   stack: { id: string; size: number } | null; // only the stack's primary is listed
+  // Files a move or give back of it handles: 1, a live photo 2 (its video), a stack all its members'.
+  files: number;
   edited: boolean; // Immich edits (crop/rotate/mirror): a move does not carry them
   inFamily?: boolean; // member timeline: same bytes already in the family account
   noOrigin?: boolean; // family timeline: no original to give back to
@@ -37,6 +39,7 @@ type Row = {
   isEdited: boolean;
   stackId: string | null;
   stackSize: number | null;
+  files: number;
   inFamily?: boolean;
   hasOrigin?: boolean;
 };
@@ -58,7 +61,12 @@ const TIMELINE_SQL = (extraColumns: string, extraWhere = '') => `
          CASE WHEN a."stackId" IS NOT NULL THEN
            (SELECT count(*)::int FROM asset s
              WHERE s."stackId" = a."stackId" AND s."deletedAt" IS NULL AND s.status = 'active')
-         END AS "stackSize"
+         END AS "stackSize",
+         CASE WHEN a."stackId" IS NOT NULL THEN
+           (SELECT (count(*) + count(s."livePhotoVideoId"))::int FROM asset s
+             WHERE s."stackId" = a."stackId" AND s."deletedAt" IS NULL AND s.status = 'active')
+         ELSE 1 + (a."livePhotoVideoId" IS NOT NULL)::int
+         END AS files
          ${extraColumns}
     FROM asset a
    WHERE a."ownerId" = $1
@@ -93,6 +101,7 @@ function toGridItem(r: Row): GridItem {
     durationMs: r.duration,
     livePhotoVideoId: r.livePhotoVideoId,
     stack: r.stackId ? { id: r.stackId, size: r.stackSize ?? 1 } : null,
+    files: r.files,
     edited: r.isEdited,
   };
 }

@@ -89,7 +89,7 @@ const beach: SourceAsset['exif'] = {
 test('plain photo: uploaded, edited metadata carried, original listed', async () => {
   const s = source({ originalFileName: 'a.jpg', edited: true, exif: beach });
   const w = world(s);
-  assert.deepEqual(await copyToFamily(w.deps, s.id), { familyAssetId: `fam-${s.id}`, originals: [s.id], uploaded: 1 });
+  assert.deepEqual(await copyToFamily(w.deps, s.id), { familyAssetId: `fam-${s.id}`, originals: [s.id], files: 1, uploaded: 1 });
   assert.deepEqual(w.calls, [
     'upload:a.jpg',
     `metadata:fam-${s.id}:{"description":"Beach","dateTimeOriginal":"2026-07-01T07:12:00.000Z","timeZone":"Europe/Warsaw","latitude":54.5,"longitude":18.5,"rating":4}`,
@@ -107,7 +107,7 @@ test('family already has the bytes → that asset, no upload; its own edits kept
   const s = source({ edited: true, exif: beach });
   const w = world(s);
   w.family.push({ id: 'fam-edited', checksum: s.checksum, edited: true, livePhotoVideoId: null, stackId: null });
-  assert.deepEqual(await copyToFamily(w.deps, s.id), { familyAssetId: 'fam-edited', originals: [s.id], uploaded: 0 });
+  assert.deepEqual(await copyToFamily(w.deps, s.id), { familyAssetId: 'fam-edited', originals: [s.id], files: 1, uploaded: 0 });
   assert.deepEqual(w.calls, []);
 
   // Unedited family copy (e.g. uploaded by hand) gets the member's edits.
@@ -131,7 +131,7 @@ test("the bytes reach the family account just before our upload → Immich's ass
   const s = source({ originalFileName: 'a.jpg' });
   const w = world(s);
   w.racing.push(s.checksum);
-  assert.deepEqual(await copyToFamily(w.deps, s.id), { familyAssetId: 'fam-raced', originals: [s.id], uploaded: 0 });
+  assert.deepEqual(await copyToFamily(w.deps, s.id), { familyAssetId: 'fam-raced', originals: [s.id], files: 1, uploaded: 0 });
   assert.deepEqual(w.calls, ['upload:a.jpg:duplicate']);
 });
 
@@ -150,15 +150,16 @@ test('safe to repeat: a failure after the upload → the repeat reuses the copy,
   assert.equal(w.calls.length, 2, 'nothing written again');
 });
 
-test('live photo: video first, then the still linked to it; only the still is an original', async () => {
+test('live photo: video first, then the still linked to it; only the still is an original, both are files', async () => {
   const video = source({ originalFileName: 'm.mp4', visibility: 'hidden' });
   const still = source({ originalFileName: 's.jpg', livePhotoVideoId: video.id });
   const w = world(still, video);
-  assert.deepEqual(await copyToFamily(w.deps, still.id), { familyAssetId: `fam-${still.id}`, originals: [still.id], uploaded: 1 });
+  assert.deepEqual(await copyToFamily(w.deps, still.id), { familyAssetId: `fam-${still.id}`, originals: [still.id], files: 2, uploaded: 2 });
   assert.deepEqual(w.calls, ['upload:m.mp4', `upload:s.jpg+fam-${video.id}`]);
 
   // Repeat (crash before the step was recorded): both found, already linked → nothing.
-  await copyToFamily(w.deps, still.id);
+  const again = await copyToFamily(w.deps, still.id);
+  assert.deepEqual([again.files, again.uploaded], [2, 0]);
   assert.equal(w.calls.length, 2);
 });
 
@@ -167,8 +168,9 @@ test('live photo whose still the family already has, unlinked → video uploaded
   const still = source({ originalFileName: 's.jpg', livePhotoVideoId: video.id });
   const w = world(still, video);
   w.family.push({ id: 'fam-s', checksum: still.checksum, edited: false, livePhotoVideoId: null, stackId: null });
-  // Only the still counts as uploaded or not: the video is no original of its own.
-  assert.equal((await copyToFamily(w.deps, still.id)).uploaded, 0);
+  // The video is a file of the move too: 1 of the 2 was uploaded.
+  const r = await copyToFamily(w.deps, still.id);
+  assert.deepEqual([r.files, r.uploaded], [2, 1]);
   assert.deepEqual(w.calls, ['upload:m.mp4', `link:fam-s+fam-${video.id}`]);
 });
 
@@ -185,7 +187,7 @@ test('stack: moves whole from its primary, re-stacked primary first; all are ori
   const w = world(p!, b!, c!);
   w.stacks.set(stackId, [p!.id, b!.id, c!.id]);
   const r = await copyToFamily(w.deps, p!.id);
-  assert.deepEqual(r, { familyAssetId: `fam-${p!.id}`, originals: [p!.id, b!.id, c!.id], uploaded: 3 });
+  assert.deepEqual(r, { familyAssetId: `fam-${p!.id}`, originals: [p!.id, b!.id, c!.id], files: 3, uploaded: 3 });
   assert.deepEqual(w.calls, ['upload:p.jpg', 'upload:b.jpg', 'upload:c.jpg', `stack:fam-${p!.id},fam-${b!.id},fam-${c!.id}`]);
 
   // Repeat: copies found, stack already there → nothing.
@@ -200,8 +202,19 @@ test('stack: a member the family already has is not uploaded, and not counted as
   w.stacks.set(stackId, [p!.id, b!.id, c!.id]);
   w.family.push({ id: 'fam-b', checksum: b!.checksum, edited: false, livePhotoVideoId: null, stackId: null });
   const r = await copyToFamily(w.deps, p!.id);
-  assert.equal(r.uploaded, 2);
+  assert.deepEqual([r.files, r.uploaded], [3, 2]);
   assert.deepEqual(w.calls, ['upload:p.jpg', 'upload:c.jpg', `stack:fam-${p!.id},fam-b,fam-${c!.id}`]);
+});
+
+test("stack with a live photo in it: that member's video is a file too", async () => {
+  const stackId = uuid();
+  const video = source({ originalFileName: 'm.mp4', visibility: 'hidden' });
+  const p = source({ originalFileName: 'p.jpg', stackId });
+  const live = source({ originalFileName: 's.jpg', stackId, livePhotoVideoId: video.id });
+  const w = world(p, live, video);
+  w.stacks.set(stackId, [p.id, live.id]);
+  const r = await copyToFamily(w.deps, p.id);
+  assert.deepEqual([r.originals, r.files, r.uploaded], [[p.id, live.id], 3, 3]);
 });
 
 test('stack: a non-primary pick is refused; 1 unmovable member refuses the whole stack, nothing written', async () => {

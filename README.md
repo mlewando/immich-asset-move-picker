@@ -7,10 +7,11 @@ Pick photos in a member's timeline and click **Move to family**. Each photo is c
 family account (with the description, date, location and rating edited in Immich), the original is
 archived in the member's account, and the 2 files are hard-linked so the photo takes no extra
 space. **Give back** undoes it: the original returns to the member's timeline and the family
-copy is deleted. Live photos and stacks move as a whole. A move is done once Immich has made the
-family copy's thumbnail and preview; until then the picker shows it as processing thumbnails. A
-big batch may wait hours for Immich's queue; a move fails only when Immich made no move's
-thumbnails for 30 min (Retry checks again, nothing is moved twice).
+copy is deleted. Live photos and stacks move as a whole: the selection, the message after
+**Move to family** and the move's history say how many files that is. A move is done once Immich
+has made the family copy's thumbnail and preview; until then the picker shows it as processing
+thumbnails. A big batch may wait hours for Immich's queue; a move fails only when Immich made no
+move's thumbnails for 30 min (Retry checks again, nothing is moved twice).
 
 Nothing is ever deleted that has no other copy, and every step can be resumed after a failure.
 A failure that usually passes on its own (Immich not answering or restarting, a file moved by

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { addRange, applyMarquee, groupByDay, rectsIntersect, toggleDay, toggleOne } from '../public/selection.js';
+import { addRange, applyMarquee, fileCount, groupByDay, rectsIntersect, toggleDay, toggleOne } from '../public/selection.js';
 
 type It = { id: string; day: string; noOrigin?: boolean };
 const items: It[] = [
@@ -22,6 +22,14 @@ test('groupByDay keeps order and flat indexes', () => {
       ['2026-07-01', ['e4']],
     ],
   );
+});
+
+test('fileCount: a live photo is 2 files, a stack all its own; ids not in the grid count nothing', () => {
+  const grid = [{ id: 'plain', files: 1 }, { id: 'live', files: 2 }, { id: 'stack', files: 4 }];
+  assert.equal(fileCount(grid, new Set(['plain'])), 1);
+  assert.equal(fileCount(grid, new Set(['plain', 'live', 'stack'])), 7);
+  assert.equal(fileCount(grid, ['live', 'gone']), 2, 'an array of ids too');
+  assert.equal(fileCount(grid, []), 0);
 });
 
 test('toggleOne adds then removes, never mutates', () => {

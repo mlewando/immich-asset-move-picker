@@ -57,6 +57,7 @@ const photo = (owner: string, day: string, extra: Partial<GridItem> = {}): GridI
     durationMs: null,
     livePhotoVideoId: null,
     stack: null,
+    files: 1,
     edited: false,
     ...extra,
   };
@@ -87,8 +88,8 @@ const october = run('2026-10-01', 8).flatMap((day, d) =>
   Array.from({ length: 6 }, (_, i) => {
     const k = d * 6 + i;
     if (k === 2) return photo('anna', day, { type: 'video', durationMs: 12_000 });
-    if (k === 4) return photo('anna', day, { livePhotoVideoId: uuid(0xf001) });
-    if (k === 7) return photo('anna', day, { stack: { id: uuid(0xf002), size: 3 } });
+    if (k === 4) return photo('anna', day, { livePhotoVideoId: uuid(0xf001), files: 2 });
+    if (k === 7) return photo('anna', day, { stack: { id: uuid(0xf002), size: 3 }, files: 3 });
     if (k === 9) return photo('anna', day, { edited: true });
     if (k === 11) return photo('anna', day, { inFamily: true });
     return photo('anna', day);
@@ -114,10 +115,16 @@ const annaAlbums = [...albumPhotos].map(([id, a]) => {
 });
 annaAlbums.sort((a, b) => b.to.localeCompare(a.to));
 const albumsOf = (assetId: string) => [...albumPhotos.values()].filter((a) => a.ids.has(assetId)).map((a) => a.name).sort();
-// What the real worker writes with 'copied' when the originals are in albums.
-const albumNote = (assetId: string) => {
-  const a = albumsOf(assetId);
-  return a.length ? `In album${a.length > 1 ? 's' : ''}: ${a.join(', ')}` : undefined;
+// What the real worker writes with 'copied': the files of a live photo or stack (how many were
+// copied only at a 1st try, all or none here), and the albums the originals are in.
+const copyNote = (q: Queue, job: Job) => {
+  const notes: string[] = [];
+  const photo = byId.get(job.sourceAssetId);
+  const files = photo?.files ?? 1;
+  if (files > 1) notes.push(q.events(job.id)?.length === 1 && !photo?.inFamily ? `${files} files copied` : `${files} files`);
+  const a = albumsOf(job.sourceAssetId);
+  if (a.length) notes.push(`In album${a.length > 1 ? 's' : ''}: ${a.join(', ')}`);
+  return notes.length ? notes.join(' • ') : undefined;
 };
 // As the real worker: a photo the family account already has is not copied, and only a 1st try
 // (nothing but 'queued' in the history) knows it was there before.
@@ -164,7 +171,7 @@ function seeder(queue: Queue) {
         step,
         familyAssetId: step === 'copied' ? family[job.id % family.length]!.id : undefined,
         originals: step === 'copied' ? [job.sourceAssetId] : undefined,
-        note: step === 'copied' ? albumNote(job.sourceAssetId) : undefined,
+        note: step === 'copied' ? copyNote(queue, job) : undefined,
         outcome: step === 'copied' ? copyOutcome(queue, job) : undefined,
         done: step === 'thumbnailed',
       });
@@ -378,7 +385,7 @@ const work = async (q: Queue, job: Job) => {
       step,
       familyAssetId: step === 'copied' ? family[0]!.id : undefined,
       originals: step === 'copied' ? [job.sourceAssetId] : undefined,
-      note: step === 'copied' ? albumNote(job.sourceAssetId) : undefined,
+      note: step === 'copied' ? copyNote(q, job) : undefined,
       outcome: step === 'copied' ? copyOutcome(q, job) : undefined,
       done: step === 'thumbnailed',
     });

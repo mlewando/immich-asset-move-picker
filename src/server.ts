@@ -54,7 +54,7 @@ const memberSchema = {
 } as const;
 const gridItemSchema = {
   type: 'object',
-  required: ['id', 'type', 'localDateTime', 'day', 'fileName', 'edited'],
+  required: ['id', 'type', 'localDateTime', 'day', 'fileName', 'files', 'edited'],
   properties: {
     id: { type: 'string' },
     type: { type: 'string', enum: ['image', 'video'] },
@@ -69,6 +69,7 @@ const gridItemSchema = {
       type: ['object', 'null'],
       properties: { id: { type: 'string' }, size: { type: 'integer' } },
     },
+    files: { type: 'integer' },
     edited: { type: 'boolean' },
     inFamily: { type: 'boolean' },
     noOrigin: { type: 'boolean' },
@@ -408,14 +409,14 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
 
   // Queues the jobs and wakes the worker. No check here whether each asset can go: it could be
   // stale by the time the worker runs. The worker's Immich calls refuse what can't, and that job
-  // is listed as failed with the reason.
+  // is listed as failed with the reason. queuedIds: the page counts the files of just those.
   const queueJobs = (req: FastifyRequest, kind: Kind, ids: string[], memberId: string | null = null) => {
     const requestedBy = req.user?.email ?? null; // null when the login is off (local dev)
     const queued = deps.queue.enqueue(kind, ids, { memberId, requestedBy });
     const alreadyQueued = ids.length - queued.length;
     req.log.info({ by: requestedBy, kind, memberId, queued: queued.length, alreadyQueued }, `${kind} requested`);
     if (queued.length) deps.worker.kick();
-    return { queued: queued.length, alreadyQueued };
+    return { queued: queued.length, alreadyQueued, queuedIds: queued };
   };
 
   app.post<{ Body: { memberId: string; assetIds: string[] } }>(
