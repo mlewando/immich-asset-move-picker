@@ -477,12 +477,10 @@ function App() {
   useEffect(() => {
     if (viewerOpen || !lastShown.current) return;
     const tile = document.querySelector(`.tile[data-id="${lastShown.current}"]`);
-    lastShown.current = null;
     if (!tile) return; // gone meanwhile (a job moved it) or another grid
     tile.querySelector('[data-open]').focus({ preventScroll: true });
-    // The browser's own scroll would stop under the sticky top bar (h-14).
-    const r = tile.getBoundingClientRect();
-    if (r.top < 56 || r.bottom > innerHeight) tile.scrollIntoView({ block: 'center' });
+    // The whole tile, not just its magnifier; its scroll margin keeps it clear of the top bar.
+    tile.scrollIntoView({ block: 'nearest' });
   }, [viewerOpen]);
 
   const member = route.kind === 'member' ? members.find((m) => m.id === route.id) : null;

@@ -57,7 +57,7 @@ class Tile extends Component {
     const src = large ? media.preview(item.id) : media.thumbnail(item.id);
     return html`
       <div
-        class=${`tile group relative aspect-square overflow-hidden${selected ? 'bg-neutral-800' : 'bg-neutral-900'}`}
+        class=${`tile group relative aspect-square scroll-mt-14 overflow-hidden${selected ? 'bg-neutral-800' : 'bg-neutral-900'}`}
         data-id=${item.id}
         data-selectable=${selectable ? '1' : '0'}
       >
