@@ -80,8 +80,11 @@ export type Immich = {
   deleteFromFamily(familyAssetIds: string[]): Promise<void>;
 
   // --- Health
-  /** Upgrade guard: supported Immich version, schema and grants. */
-  check(): Promise<GuardResult>;
+  /**
+   * Upgrade guard: supported Immich version, schema and grants. quick: already read-only, so a
+   * slow Immich isn't given longer to answer (see VERSION_RECHECK_MS).
+   */
+  check(opts?: { quick?: boolean }): Promise<GuardResult>;
   /** Reachability of Immich's database and API: 'ok' or 'error: …'. */
   ping(): Promise<{ db: string; api: string }>;
   close(): Promise<void>;
@@ -154,7 +157,7 @@ export function createImmich(cfg: {
       linkToFamily({ pairs: sqlLinkPairs(db, familyId), localPath: (p) => mapImmichPath(p, cfg.library) }, ids),
     missingThumbnails: async (ids) => missingThumbnails(db, await familyId(), ids),
 
-    check: () => checkGuard({ api, db }),
+    check: (opts) => checkGuard({ api, db, quick: opts?.quick }),
     async ping() {
       const [dbState, apiState] = await Promise.all([probe(() => db.query('SELECT 1')), probe(() => api.getServerVersion())]);
       return { db: dbState, api: apiState };

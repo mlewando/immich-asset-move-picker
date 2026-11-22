@@ -186,7 +186,8 @@ export type Worker = {
 
 export function createWorker(
   deps: JobDeps & {
-    guard: () => Promise<GuardResult>;
+    // quick: the worker is paused, so it only wants to know whether it can go on (see Immich.check).
+    guard: (opts: { quick: boolean }) => Promise<GuardResult>;
     log: { info(msg: string): void; error(msg: string): void };
     onChange?: () => void;
     /** How often waiting moves are checked against Immich (default 30 s). */
@@ -209,6 +210,8 @@ export function createWorker(
   let checking: Promise<WorkerState> | null = null;
   let wakeTimer: NodeJS.Timeout | undefined;
   let lastCheck = 0;
+  // When the latest guard run started: a paused worker checks again recheckMs after that.
+  let guardStartedAt = 0;
   // Since when the worker has been watching Immich: its own start, or the end of the last pause.
   let resumedAt = Date.now();
 
@@ -218,7 +221,10 @@ export function createWorker(
   // Immich came back) never lands after a newer one that passed and pauses the worker again.
   let guardChain: Promise<unknown> = Promise.resolve();
   const runGuard = (): Promise<GuardResult> => {
-    const run = guardChain.then(() => deps.guard());
+    const run = guardChain.then(() => {
+      guardStartedAt = Date.now();
+      return deps.guard({ quick: paused });
+    });
     guardChain = run.catch(() => {});
     return run;
   };
@@ -305,7 +311,8 @@ export function createWorker(
   const scheduleWake = (): void => {
     clearTimeout(wakeTimer);
     if (paused || stopped) {
-      wakeTimer = setTimeout(kick, recheckMs).unref();
+      // Counted from the start of the last check, so a slow failing one doesn't add its own time.
+      wakeTimer = setTimeout(kick, Math.max(0, recheckMs - (Date.now() - guardStartedAt))).unref();
       return;
     }
     const delays: number[] = [];

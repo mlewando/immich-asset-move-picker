@@ -40,8 +40,8 @@ const queue = openQueue(join(config.dataDir, 'queue.db'));
 // Upgrade guard: checked on start and by the worker before each queued job.
 let guard: GuardResult | undefined;
 let lastGuardOk: boolean | undefined;
-const runGuard = async (): Promise<GuardResult> => {
-  guard = await immich.check();
+const runGuard = async (opts?: { quick?: boolean }): Promise<GuardResult> => {
+  guard = await immich.check(opts);
   if (guard.ok !== lastGuardOk) {
     if (guard.ok) app.log.info('guard ok: Immich version and schema as expected');
     else app.log.error({ problems: guard.problems }, 'guard FAILED, read-only mode');
@@ -73,8 +73,8 @@ const publishMetrics = (): void => {
 const worker = createWorker({
   queue,
   immich,
-  guard: async () => {
-    const g = await runGuard();
+  guard: async (opts) => {
+    const g = await runGuard(opts);
     publishMetrics();
     return g;
   },
@@ -122,7 +122,8 @@ const prune = (): void => {
 };
 prune();
 
-// Recover from a paused guard or an unreachable DB/Immich without a restart.
+// The worker checks again on its own while paused; this is the backstop, and notices an outage
+// while the queue is idle.
 setInterval(() => {
   worker.kick();
   publishMetrics();
