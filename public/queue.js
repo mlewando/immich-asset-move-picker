@@ -62,7 +62,8 @@ function Tile({ job, active, onOpen, showState }) {
   const label = `${kindLabel(job)} ${job.fileName ?? ''}: ${s.text}`;
   return html`<button
     data-job=${job.id}
-    class=${`group relative aspect-square overflow-hidden bg-neutral-800 ${focusRing} focus-visible:ring-inset ${active ? 'ring-2 ring-inset ring-sky-400' : ''}`}
+    class="photo-ring group relative aspect-square overflow-hidden bg-neutral-800 outline-none"
+    aria-current=${active ? 'true' : undefined}
     onClick=${() => onOpen(job.id)}
     aria-label=${label}
     title=${label}
@@ -81,7 +82,7 @@ function FailedCard({ job, active, memberName, readOnly, onOpen, onRetry }) {
   return html`<div
     class=${`flex items-center gap-3 rounded-xl border bg-neutral-900 p-2 pr-3 ${active ? 'border-sky-400' : 'border-white/5 hover:border-white/15'}`}
   >
-    <button data-job=${job.id} class=${`flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left ${focusRing}`} onClick=${() => onOpen(job.id)}>
+    <button data-job=${job.id} class=${`flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left ${focusRing}`} aria-current=${active ? 'true' : undefined} onClick=${() => onOpen(job.id)}>
       <span class="relative shrink-0">
         <${Thumb} class="size-16 rounded-lg" src=${media.thumbnail(job.thumbAssetId)} loading="lazy" />
         ${job.kind === 'giveback' && html`<${GiveBackMark} />`}
@@ -270,7 +271,7 @@ function Detail({ job, closing, memberName, readOnly, onRetry, onClose }) {
         </button>
       </div>
       <div class="min-h-0 flex-1 overflow-y-auto">
-        <button class=${`group relative block aspect-[4/3] w-full bg-black ${focusRing}`} onClick=${() => setEnlarged(true)} aria-label="Show the photo full screen">
+        <button class="photo-ring group relative block aspect-[4/3] w-full bg-black outline-none" onClick=${() => setEnlarged(true)} aria-label="Show the photo full screen">
           <${Thumb} class="size-full bg-black!" fit="object-contain" src=${media.preview(job.thumbAssetId)} alt=${job.fileName ?? ''} />
           <span class="absolute bottom-3 right-3 grid size-9 place-items-center rounded-full bg-black/60 text-white opacity-80 backdrop-blur-sm transition-opacity group-hover:opacity-100">
             <${Icon} name="expand" class="size-4" />
