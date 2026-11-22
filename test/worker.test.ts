@@ -365,6 +365,42 @@ test('worker: on resume, jobs waiting for an automatic retry are tried at once, 
   assert.equal(job.failures, 1);
 });
 
+test('worker: Check again on an idle worker that finds it paused keeps checking on its own', async () => {
+  const s = setup({ a: 'timeline' });
+  let guard = bad;
+  const wk = createWorker({ ...s.deps, guard: async () => guard, log: silent, recheckMs: 20 });
+  assert.equal((await wk.recheck()).paused, true);
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER }); // queued earlier, kick lost while paused
+  guard = ok;
+  for (let i = 0; i < 50 && s.queue.counts().done === 0; i++) await sleep(10);
+  await wk.idle();
+  assert.equal(s.queue.counts().done, 1, 'no outside kick needed');
+});
+
+test('worker: guard runs never overlap, so an older failing check cannot undo a newer pass', async () => {
+  const s = setup({});
+  const results = [bad, ok];
+  const delays = [40, 0]; // the 1st (failing) check is the slow one
+  let active = 0;
+  let overlapped = false;
+  const guard = async () => {
+    const i = 2 - results.length;
+    active++;
+    if (active > 1) overlapped = true;
+    await sleep(delays[i]!);
+    active--;
+    return results.shift() ?? ok;
+  };
+  const wk = createWorker({ ...s.deps, guard, log: silent, recheckMs: 60_000 });
+  wk.kick(); // drain's check: slow, fails
+  await sleep(5);
+  const state = await wk.recheck(); // Check again meanwhile: passes
+  await wk.idle();
+  assert.equal(overlapped, false);
+  assert.equal(state.paused, false);
+  assert.equal(wk.state().paused, false, 'the slow failure did not land last');
+});
+
 test('worker: recheck calls made together share 1 guard run', async () => {
   const s = setup({});
   let calls = 0;

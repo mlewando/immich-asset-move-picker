@@ -214,6 +214,15 @@ export function createWorker(
 
   const state = (): WorkerState => ({ running: running !== null, paused, pausedReason });
 
+  // 1 guard run at a time, each after the one before: a slow check that fails (begun before
+  // Immich came back) never lands after a newer one that passed and pauses the worker again.
+  let guardChain: Promise<unknown> = Promise.resolve();
+  const runGuard = (): Promise<GuardResult> => {
+    const run = guardChain.then(() => deps.guard());
+    guardChain = run.catch(() => {});
+    return run;
+  };
+
   /** Takes a guard result: pauses, stays paused or resumes. Returns whether the worker may work. */
   const applyGuard = (guard: GuardResult): boolean => {
     const reason = guard.problems.join('; ');
@@ -233,7 +242,7 @@ export function createWorker(
 
   const drain = async (): Promise<void> => {
     for (;;) {
-      if (!applyGuard(await deps.guard())) return;
+      if (!applyGuard(await runGuard())) return;
       // Also between jobs: a long batch of copies doesn't hold back the moves already copied.
       if (Date.now() - lastCheck >= waitCheckMs) {
         lastCheck = Date.now();
@@ -312,7 +321,7 @@ export function createWorker(
 
   const recheck = (): Promise<WorkerState> => {
     checking ??= (async () => {
-      if (applyGuard(await deps.guard())) kick();
+      if (applyGuard(await runGuard())) kick();
       else if (!running) scheduleWake(); // found paused while idle: keep checking
       return state();
     })().finally(() => {
