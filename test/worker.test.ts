@@ -163,6 +163,15 @@ test('move: nothing uploaded on a later try → the history does not say who mad
     assert.deepEqual(copiedEvent(s.queue, m.id), ['unknown', null]);
   }
 
+  // Queued before the picker kept a history: no 'queued' entry, so not known to be the 1st try.
+  for (const kept of [[], [{ at: '2026-01-01T00:00:00.000Z', type: 'retried', step: 'queued', message: null, by: null, outcome: null }]] as const) {
+    const old = setup({ a: 'timeline' });
+    old.inFamily.add('a');
+    const m = claim(old.queue, 'a');
+    await runMove({ ...old.deps, queue: { ...old.queue, events: () => [...kept] } }, m);
+    assert.deepEqual(copiedEvent(old.queue, m.id), ['unknown', null]);
+  }
+
   // A later try that uploads: copied.
   const s = setup({ a: 'timeline' });
   const m = claim(s.queue, 'a');
