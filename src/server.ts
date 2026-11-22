@@ -49,8 +49,8 @@ const FONTS = {
 const nullable = (type: string) => ({ type: [type, 'null'] });
 const memberSchema = {
   type: 'object',
-  required: ['id', 'name', 'email'],
-  properties: { id: { type: 'string' }, name: { type: 'string' }, email: { type: 'string' } },
+  required: ['id', 'name', 'email', 'hasPhotos'],
+  properties: { id: { type: 'string' }, name: { type: 'string' }, email: { type: 'string' }, hasPhotos: { type: 'boolean' } },
 } as const;
 const gridItemSchema = {
   type: 'object',

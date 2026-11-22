@@ -129,7 +129,7 @@ test('a write needs the CSRF token from GET /api/csrf, with its cookie', async (
 });
 
 // --- moves ------------------------------------------------------------------------------------
-const members = () => fakeImmich({ members: [{ id: ANNA, name: 'Anna', email: 'a@x' }], names: { [ASSET]: 'f.jpg' } });
+const members = () => fakeImmich({ members: [{ id: ANNA, name: 'Anna', email: 'a@x', hasPhotos: true }], names: { [ASSET]: 'f.jpg' } });
 const post = (url: string, payload?: unknown): InjectOptions => ({ method: 'POST', url, payload: payload as object });
 
 test('moves: queues every id (the worker decides what can move), kicks the worker, not twice', async () => {
@@ -222,15 +222,15 @@ test('queue page: sections with each job\'s asset and file name; a job\'s histor
 
 // --- read side --------------------------------------------------------------------------------
 test('members are listed; unlisted fields are dropped', async () => {
-  const immich = fakeImmich({ members: [{ id: ANNA, name: 'Anna', email: 'anna@example.test', password: 'leak' } as never] });
+  const immich = fakeImmich({ members: [{ id: ANNA, name: 'Anna', email: 'anna@example.test', hasPhotos: true, password: 'leak' } as never] });
   const res = await call({ immich }, '/api/members');
-  assert.deepEqual(res.json(), [{ id: ANNA, name: 'Anna', email: 'anna@example.test' }]);
+  assert.deepEqual(res.json(), [{ id: ANNA, name: 'Anna', email: 'anna@example.test', hasPhotos: true }]);
 });
 
 test('member timeline only for a listed member; never the family account', async () => {
   const immich = () =>
     fakeImmich({
-      members: [{ id: ANNA, name: 'Anna', email: 'a@x' }],
+      members: [{ id: ANNA, name: 'Anna', email: 'a@x', hasPhotos: true }],
       timelines: { [ANNA]: [item(ASSET)], [FAMILY_ID]: [item(ASSET)] },
     });
   const ok = await call({ immich: immich() }, `/api/members/${ANNA}/assets`);
@@ -244,7 +244,7 @@ test('member timeline only for a listed member; never the family account', async
 
 test('member timeline filter: album + day range passed on; malformed values → 400', async () => {
   const ALBUM = '00000000-0000-4000-8000-0000000a1b01';
-  const immich = fakeImmich({ members: [{ id: ANNA, name: 'Anna', email: 'a@x' }] });
+  const immich = fakeImmich({ members: [{ id: ANNA, name: 'Anna', email: 'a@x', hasPhotos: true }] });
   const ok = await call({ immich }, `/api/members/${ANNA}/assets?album=${ALBUM}&from=2026-07-01&to=2026-07-31`);
   assert.equal(ok.statusCode, 200);
   assert.ok(immich.calls.includes(`memberTimeline ${ANNA} {"albumId":"${ALBUM}","from":"2026-07-01","to":"2026-07-31"}`), immich.calls.join());
@@ -255,7 +255,7 @@ test('member timeline filter: album + day range passed on; malformed values → 
 
 test('member albums: only for a listed member', async () => {
   const albums = [{ id: '00000000-0000-4000-8000-0000000a1b01', name: 'Holiday', count: 3, from: '2026-07-01', to: '2026-07-14' }];
-  const immich = fakeImmich({ members: [{ id: ANNA, name: 'Anna', email: 'a@x' }], albums: { [ANNA]: albums } });
+  const immich = fakeImmich({ members: [{ id: ANNA, name: 'Anna', email: 'a@x', hasPhotos: true }], albums: { [ANNA]: albums } });
   assert.deepEqual((await call({ immich }, `/api/members/${ANNA}/albums`)).json(), albums);
   assert.equal((await call({ immich }, `/api/members/${FAMILY_ID}/albums`)).statusCode, 404);
 });
@@ -268,7 +268,7 @@ test('family timeline', async () => {
 test('timelines leave out assets with an unfinished job of their kind; back once it is done', async () => {
   const OTHER = '00000000-0000-4000-8000-00000000a552';
   const immich = fakeImmich({
-    members: [{ id: ANNA, name: 'Anna', email: 'a@x' }],
+    members: [{ id: ANNA, name: 'Anna', email: 'a@x', hasPhotos: true }],
     timelines: { [ANNA]: [item(ASSET), item(OTHER)], [FAMILY_ID]: [item(ASSET), item(OTHER)] },
   });
   const queue = openQueue(':memory:');

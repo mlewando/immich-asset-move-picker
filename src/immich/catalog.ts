@@ -1,7 +1,8 @@
 // Read side: what the grids show, straight from Immich's DB (read-only grants).
 import type { Db } from './db.ts';
 
-export type Member = { id: string; name: string; email: string };
+// hasPhotos: at least 1 photo on the member's timeline (the page starts on such a member).
+export type Member = { id: string; name: string; email: string; hasPhotos: boolean };
 
 export type GridItem = {
   id: string;
@@ -94,9 +95,14 @@ function toGridItem(r: Row): GridItem {
 
 export function members(db: Db, familyId: string): Promise<Member[]> {
   return db.query<Member>(
-    `SELECT id, name, email FROM "user"
-      WHERE "deletedAt" IS NULL AND id <> $1
-      ORDER BY name, email`,
+    `SELECT u.id, u.name, u.email,
+            EXISTS (SELECT 1 FROM asset a
+                     WHERE a."ownerId" = u.id
+                       AND a.visibility = 'timeline' AND a."deletedAt" IS NULL AND a.status = 'active'
+                       AND a."libraryId" IS NULL) AS "hasPhotos"
+       FROM "user" u
+      WHERE u."deletedAt" IS NULL AND u.id <> $1
+      ORDER BY u.name, u.email`,
     [familyId],
   );
 }
