@@ -8,7 +8,7 @@ import { FilterBar } from './filters.js';
 import { Grid } from './grid.js';
 import { Icon } from './icons.js';
 import { keepAlive } from './expiry.js';
-import { JobsIndicator, StorageTemplateReminder, useJobs } from './jobs.js';
+import { CheckAgain, JobsIndicator, StorageTemplateReminder, useJobs } from './jobs.js';
 import { QueuePage } from './queue.js';
 import { addRange, toggleDay, toggleOne } from './selection.js';
 import { startMember } from './start.js';
@@ -367,9 +367,9 @@ function App() {
   const { gridKey, items, error, setError, selected, setSelected, anchor, reload, drop } = useGrid(route);
   const [toast, setToast] = useToast();
 
+  const loadStatus = useCallback(() => api.status({ poll: true }).then(setStatus, () => {}), []);
   useEffect(() => {
     api.members().then(setMembers, (e) => setError(e.message));
-    const loadStatus = () => api.status({ poll: true }).then(setStatus, () => {});
     loadStatus();
     const t = setInterval(loadStatus, STATUS_POLL_MS);
     return () => clearInterval(t);
@@ -454,6 +454,29 @@ function App() {
         : 'Copy to the family account and archive the originals',
     run: runSelected,
   };
+  // The worker paused or went on (the jobs poll saw it): the read-only banner follows at once,
+  // not at its own next poll.
+  const paused = summary?.worker.paused;
+  useEffect(() => {
+    if (paused !== undefined) loadStatus();
+  }, [paused]);
+
+  // "Check again", in the read-only banner and the paused dropdown: 1 check for both.
+  const [checking, setChecking] = useState(false);
+  const onCheckAgain = useCallback(async () => {
+    setChecking(true);
+    try {
+      const r = await api.recheck();
+      setStatus((s) => ({ ...s, ...r }));
+      await refreshJobs();
+      setToast(r.readOnly ? { kind: 'warn', text: 'Still not working' } : { kind: 'ok', text: 'Working again: moves resumed' });
+    } catch (e) {
+      setToast({ kind: 'error', text: e.message });
+    } finally {
+      setChecking(false);
+    }
+  }, [refreshJobs]);
+
   const onRetry = useCallback(
     (id) => api.retryJob(id).then(refreshJobs, (e) => setToast({ kind: 'error', text: e.message })),
     [refreshJobs],
@@ -555,14 +578,15 @@ function App() {
           setTileSize=${setTileSize}
           onClear=${() => setSelected(new Set())}
           onMenu=${onMenu}
-          jobs=${html`<${JobsIndicator} summary=${summary} readOnly=${readOnly} onRetry=${onRetry} onOpenJob=${openJob} onOpenQueue=${openQueue} />`}
+          jobs=${html`<${JobsIndicator} summary=${summary} readOnly=${readOnly} checking=${checking} onCheckAgain=${onCheckAgain} onRetry=${onRetry} onOpenJob=${openJob} onOpenQueue=${openQueue} />`}
         />
         ${route.kind === 'member' && html`<${FilterBar} albums=${albums} filter=${route.filter} onChange=${onFilter} />`}
         <${StorageTemplateReminder} count=${movedCount} onDismiss=${() => setMovedCount(0)} />
         ${status?.readOnly &&
         html`<div class="flex items-start gap-2 border-b border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-200" role="alert">
           <${Icon} name="alert" class="mt-0.5 size-4 shrink-0" />
-          <span><strong class="font-semibold">Read-only.</strong> ${status.problems.join(' • ')}</span>
+          <span class="min-w-0 flex-1 break-words"><strong class="font-semibold">Read-only.</strong> ${status.problems.join(' • ')}</span>
+          <${CheckAgain} checking=${checking} onClick=${onCheckAgain} />
         </div>`}
         <main class="px-2 pb-24 sm:px-4">
           ${route.kind === 'queue' &&

@@ -9,6 +9,7 @@ import { createImmich, type GridItem, type Member } from '../../src/immich/index
 import { mapImmichPath } from '../../src/immich/paths.ts';
 import { openQueue } from '../../src/queue.ts';
 import { buildApp } from '../../src/server.ts';
+import { fakeWorker } from '../fakes.ts';
 
 const config = loadConfig(process.env);
 const immich = createImmich(config);
@@ -18,7 +19,7 @@ const app = await buildApp({
   immich,
   guard: () => undefined,
   queue,
-  worker: { kick: () => {}, state: () => ({ running: false, paused: false, pausedReason: [] }) },
+  worker: fakeWorker(),
 });
 let base: string;
 const get = async <T>(path: string): Promise<T> => {

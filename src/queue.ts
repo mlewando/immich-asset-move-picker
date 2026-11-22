@@ -91,6 +91,8 @@ export type Queue = {
   nextRetryAt(): string | null;
   /** Pending jobs due to try again later. */
   retrying(): number;
+  /** Those jobs become due now, their attempts kept (Immich is back); returns how many. */
+  retryNow(): number;
   /**
    * Back to pending at the same step, waiting for something Immich does on its own: no longer
    * claimed 1 by 1, but listed by waiting() to be checked all together. The 1st wait records
@@ -239,6 +241,9 @@ export function openQueue(path: string): Queue {
     ),
     nextRetryAt: db.prepare(`SELECT min(retry_at) AS t FROM job WHERE status = 'pending' AND retry_at IS NOT NULL`),
     retrying: db.prepare(`SELECT count(*) AS n FROM job WHERE status = 'pending' AND retry_at IS NOT NULL`),
+    retryNow: db.prepare(
+      `UPDATE job SET retry_at = NULL, updated_at = ${NOW} WHERE status = 'pending' AND retry_at IS NOT NULL`,
+    ),
     isWaiting: db.prepare(`SELECT waiting_since FROM job WHERE id = ?`),
     wait: db.prepare(
       `UPDATE job SET status = 'pending', waiting_since = COALESCE(waiting_since, ${NOW}), updated_at = ${NOW}
@@ -335,6 +340,7 @@ export function openQueue(path: string): Queue {
       }),
     nextRetryAt: () => ((sql.nextRetryAt.get() as Row).t as string | null) ?? null,
     retrying: () => Number((sql.retrying.get() as Row).n),
+    retryNow: () => Number(sql.retryNow.run().changes),
     wait: (id) =>
       transaction(db, () => {
         const r = sql.isWaiting.get(id) as Row | undefined;

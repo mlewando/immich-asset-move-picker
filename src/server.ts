@@ -27,7 +27,7 @@ export type ServerDeps = {
     Queue,
     'enqueue' | 'retry' | 'counts' | 'failed' | 'unfinishedAssetIds' | 'unfinishedAtStep' | 'retrying' | 'list' | 'events'
   >;
-  worker: Pick<Worker, 'kick' | 'state'>;
+  worker: Pick<Worker, 'kick' | 'state' | 'recheck'>;
 };
 
 const PUBLIC_DIR = fileURLToPath(new URL('../public', import.meta.url));
@@ -234,6 +234,15 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
   app.get('/api/status', async (req) => {
     const { ok, problems } = guardState();
     return { readOnly: !ok, problems, user: req.user?.email ?? null };
+  });
+
+  // "Check again": runs the guard now and, if it passes, the jobs go on. Allowed while read-only:
+  // it is the way out of it.
+  app.post('/api/recheck', async (req) => {
+    await deps.worker.recheck();
+    const { ok, problems } = guardState();
+    req.log.info({ by: req.user?.email ?? null, ok }, 'check again requested');
+    return { readOnly: !ok, problems };
   });
 
   app.get('/api/members', { schema: { response: { 200: { type: 'array', items: memberSchema } } } }, async () =>

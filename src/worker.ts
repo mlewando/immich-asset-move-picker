@@ -1,5 +1,6 @@
 // The in-process worker: runs queued jobs (moves and give backs) 1 at a time. Before each job it
-// re-runs the upgrade guard; a failed guard pauses the worker until the next kick.
+// re-runs the upgrade guard; a failed guard pauses the worker, which then checks again every
+// PAUSED_RECHECK_MS until the guard passes.
 import { isTransient, transient, type GuardResult, type Immich } from './immich/index.ts';
 import type { Job, Queue } from './queue.ts';
 
@@ -9,6 +10,9 @@ import type { Job, Queue } from './queue.ts';
  * job fails and waits for Retry. Every step is safe to repeat.
  */
 export const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
+
+/** A paused worker runs the guard again this often, so jobs go on soon after Immich is back. */
+export const PAUSED_RECHECK_MS = 10_000;
 
 export type JobDeps = {
   queue: Queue;
@@ -102,11 +106,13 @@ export async function runMove(deps: JobDeps, job: Job): Promise<'done' | 'waitin
  * All waiting moves at once, 1 Immich query: those whose family copies have their thumbnails
  * are done. Immich works through its queue in its own order and pace, so a move doesn't fail for
  * waiting long, only when no move got its thumbnails for THUMBNAIL_STALL_MS (Immich stuck or a
- * file it can't read). Returns the jobs it finished and those it failed (with the error).
+ * file it can't read). Time before `since` (ms) doesn't count: the worker was paused or not
+ * running then, so nobody saw whether Immich made any. Returns the jobs it finished and those it
+ * failed (with the error).
  */
 export async function checkThumbnails(
   deps: JobDeps,
-  { now = Date.now(), stallMs = THUMBNAIL_STALL_MS } = {},
+  { now = Date.now(), stallMs = THUMBNAIL_STALL_MS, since: notBefore = 0 } = {},
 ): Promise<{ done: Job[]; failed: { job: Job; error: string }[] }> {
   const out: { done: Job[]; failed: { job: Job; error: string }[] } = { done: [], failed: [] };
   const waiting = deps.queue.waiting();
@@ -123,7 +129,7 @@ export async function checkThumbnails(
   }
   const last = deps.queue.lastDoneAt('thumbnailed');
   for (const job of still) {
-    const since = Math.max(Date.parse(job.waitingSince!), last ? Date.parse(last) : 0);
+    const since = Math.max(Date.parse(job.waitingSince!), last ? Date.parse(last) : 0, notBefore);
     if (now - since > stallMs) {
       const error = `Immich made no thumbnails for ${Math.round(stallMs / 60_000)} min: check Immich's Generate Thumbnails job, then Retry`;
       deps.queue.fail(job.id, error);
@@ -169,6 +175,11 @@ export type Worker = {
   /** Start working if idle. Safe to call any time (enqueue, retry, startup). */
   kick(): void;
   state(): WorkerState;
+  /**
+   * Runs the guard now, without waiting for the next check, and starts working if it passes
+   * (the curator's "Check again"). Calls made while 1 runs share it.
+   */
+  recheck(): Promise<WorkerState>;
   /** Resolves once the current run (if any) has finished. */
   idle(): Promise<void>;
 };
@@ -182,30 +193,51 @@ export function createWorker(
     waitCheckMs?: number;
     /** Delays before trying a transient failure again (default RETRY_DELAYS_MS). */
     retryDelaysMs?: number[];
+    /** How often a paused worker runs the guard again (default PAUSED_RECHECK_MS). */
+    recheckMs?: number;
   },
 ): Worker {
   const waitCheckMs = deps.waitCheckMs ?? 30_000;
   const retryDelays = deps.retryDelaysMs ?? RETRY_DELAYS_MS;
+  const recheckMs = deps.recheckMs ?? PAUSED_RECHECK_MS;
   let running: Promise<void> | null = null;
   let again = false;
   let paused = false;
   let pausedReason: string[] = [];
+  // The last drain threw (DB or Immich gone between the guard and a job): checked again like a pause.
+  let stopped = false;
+  let checking: Promise<WorkerState> | null = null;
   let wakeTimer: NodeJS.Timeout | undefined;
   let lastCheck = 0;
+  // Since when the worker has been watching Immich: its own start, or the end of the last pause.
+  let resumedAt = Date.now();
+
+  const state = (): WorkerState => ({ running: running !== null, paused, pausedReason });
+
+  /** Takes a guard result: pauses, stays paused or resumes. Returns whether the worker may work. */
+  const applyGuard = (guard: GuardResult): boolean => {
+    const reason = guard.problems.join('; ');
+    if (!guard.ok) {
+      // Once per outage, not at every check during it.
+      if (!paused || reason !== pausedReason.join('; ')) deps.log.error(`worker paused: ${reason}`);
+    } else if (paused) {
+      resumedAt = Date.now();
+      // What made these jobs fail is likely what paused the worker, and that has passed.
+      const due = deps.queue.retryNow();
+      deps.log.info(`worker resumed${due ? `, ${due} retrying job(s) tried again now` : ''}`);
+    }
+    paused = !guard.ok;
+    pausedReason = guard.problems;
+    return guard.ok;
+  };
 
   const drain = async (): Promise<void> => {
     for (;;) {
-      const guard = await deps.guard();
-      paused = !guard.ok;
-      pausedReason = guard.problems;
-      if (paused) {
-        deps.log.error(`worker paused: ${guard.problems.join('; ')}`);
-        return;
-      }
+      if (!applyGuard(await deps.guard())) return;
       // Also between jobs: a long batch of copies doesn't hold back the moves already copied.
       if (Date.now() - lastCheck >= waitCheckMs) {
         lastCheck = Date.now();
-        const checked = await checkThumbnails(deps);
+        const checked = await checkThumbnails(deps, { since: resumedAt });
         for (const job of checked.done) deps.log.info(`${job.kind} ${job.id} done: ${job.sourceAssetId}`);
         for (const { job, error } of checked.failed) deps.log.error(`${job.kind} ${job.id} failed: ${error}`);
         if (checked.done.length || checked.failed.length) deps.onChange?.();
@@ -242,10 +274,12 @@ export function createWorker(
     running = (async () => {
       do {
         again = false;
+        stopped = false;
         try {
           await drain();
         } catch (err) {
-          // DB or Immich unreachable: stay idle; the next kick (or the periodic one) retries.
+          // DB or Immich unreachable: stay idle; the next kick (or the timed one) retries.
+          stopped = true;
           deps.log.error(`worker stopped: ${(err as Error).message}`);
         }
       } while (again);
@@ -257,10 +291,14 @@ export function createWorker(
   };
 
   // While moves wait for thumbnails, come back for the next check; while jobs wait to be tried
-  // again, come back when the first is due. A paused worker waits for the periodic kick instead.
+  // again, come back when the first is due. A paused or stopped worker comes back to check
+  // whether it can go on.
   const scheduleWake = (): void => {
     clearTimeout(wakeTimer);
-    if (paused) return;
+    if (paused || stopped) {
+      wakeTimer = setTimeout(kick, recheckMs).unref();
+      return;
+    }
     const delays: number[] = [];
     try {
       if (deps.queue.unfinishedAtStep('linked')) delays.push(waitCheckMs - (Date.now() - lastCheck));
@@ -272,9 +310,21 @@ export function createWorker(
     if (delays.length) wakeTimer = setTimeout(kick, Math.max(1000, Math.min(...delays))).unref();
   };
 
+  const recheck = (): Promise<WorkerState> => {
+    checking ??= (async () => {
+      if (applyGuard(await deps.guard())) kick();
+      else if (!running) scheduleWake(); // found paused while idle: keep checking
+      return state();
+    })().finally(() => {
+      checking = null;
+    });
+    return checking;
+  };
+
   return {
     kick,
-    state: () => ({ running: running !== null, paused, pausedReason }),
+    state,
+    recheck,
     idle: () => running ?? Promise.resolve(),
   };
 }

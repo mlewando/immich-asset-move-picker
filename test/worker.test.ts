@@ -301,6 +301,86 @@ test('worker: a failed guard pauses it, nothing is claimed', async () => {
   assert.deepEqual(wk.state(), { running: false, paused: true, pausedReason: bad.problems });
 });
 
+test('worker: paused, it checks again on its own and goes on once the guard passes', async () => {
+  const s = setup({ a: 'timeline' });
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER });
+  let guard = bad;
+  const logged: string[] = [];
+  const log = { info: (m: string) => void logged.push(m), error: (m: string) => void logged.push(m) };
+  const wk = createWorker({ ...s.deps, guard: async () => guard, log, recheckMs: 20 });
+  wk.kick();
+  await wk.idle();
+  assert.equal(wk.state().paused, true);
+  await sleep(70); // a few checks while still paused
+  assert.deepEqual(logged, [`worker paused: ${bad.problems[0]}`], 'logged once, not at every check');
+  guard = ok;
+  for (let i = 0; i < 50 && s.queue.counts().done === 0; i++) await sleep(10);
+  await wk.idle();
+  assert.equal(s.queue.counts().done, 1, 'no outside kick needed');
+  assert.equal(wk.state().paused, false);
+  assert.deepEqual(logged.slice(1), ['worker resumed', 'move 1 done: a']);
+});
+
+test('worker: a stopped drain (DB gone) is checked again on its own', async () => {
+  const s = setup({ a: 'timeline' });
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER });
+  let down = true;
+  const guard = async () => {
+    if (down) throw new Error('Connection terminated unexpectedly');
+    return ok;
+  };
+  const wk = createWorker({ ...s.deps, guard, log: silent, recheckMs: 20 });
+  wk.kick();
+  await wk.idle();
+  down = false;
+  for (let i = 0; i < 50 && s.queue.counts().done === 0; i++) await sleep(10);
+  await wk.idle();
+  assert.equal(s.queue.counts().done, 1);
+});
+
+test('worker: on resume, jobs waiting for an automatic retry are tried at once, attempts kept', async () => {
+  const s = setup({ a: 'timeline' });
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER });
+  s.failNext.copyToFamily = dropped();
+  let guard = ok;
+  const wk = createWorker({ ...s.deps, guard: async () => guard, log: silent, retryDelaysMs: [60_000], recheckMs: 60_000 });
+  wk.kick();
+  await wk.idle();
+  assert.equal(s.queue.retrying(), 1, 'Immich dropped the upload: tried again in 1 min');
+
+  // Still up: a check that passes changes nothing.
+  await wk.recheck();
+  await wk.idle();
+  assert.equal(s.queue.retrying(), 1, 'not due early without a pause');
+
+  guard = bad;
+  await wk.recheck();
+  assert.equal(s.queue.retrying(), 1, 'not while paused');
+  guard = ok;
+  const state = await wk.recheck();
+  assert.equal(state.paused, false);
+  await wk.idle();
+  const [job] = s.queue.list('done').jobs;
+  assert.ok(job, 'done right after the resume');
+  assert.equal(job.failures, 1);
+});
+
+test('worker: recheck calls made together share 1 guard run', async () => {
+  const s = setup({});
+  let calls = 0;
+  const wk = createWorker({
+    ...s.deps,
+    guard: async () => (calls++, await sleep(10), bad),
+    log: silent,
+    recheckMs: 60_000,
+  });
+  const [a, b] = await Promise.all([wk.recheck(), wk.recheck()]);
+  assert.equal(calls, 1);
+  assert.deepEqual([a.paused, b.paused], [true, true]);
+  await wk.recheck();
+  assert.equal(calls, 2, 'a later call runs its own');
+});
+
 test('worker: a kick during a drain is not lost', async () => {
   const s = setup({ a: 'timeline', b: 'timeline' });
   s.queue.enqueue('move', ['a'], { memberId: MEMBER });
@@ -379,6 +459,32 @@ test('thumbnails: a long wait is fine while other moves get theirs; no progress 
   await checkThumbnails(s.deps, { now: Date.now() + THUMBNAIL_STALL_MS + 1000 });
   assert.match(row(s.queue)!.error!, /no thumbnails for 30 min/);
   assert.equal(row(s.queue)!.step, 'linked');
+});
+
+test('thumbnails: time before `since` (a pause, the picker not running) is not counted as a stall', async () => {
+  const s = setup({ a: 'timeline' });
+  await waitingMoves(s, ['a']);
+  const now = Date.now() + THUMBNAIL_STALL_MS + 60_000; // waited 31 min, but Immich was down for 30 of them
+  await checkThumbnails(s.deps, { now, since: now - 60_000 });
+  assert.equal(row(s.queue), null);
+  assert.deepEqual(s.queue.waiting().map((j) => j.sourceAssetId), ['a']);
+  await checkThumbnails(s.deps, { now, since: now - THUMBNAIL_STALL_MS - 1000 });
+  assert.match(row(s.queue)!.error!, /no thumbnails for 30 min/, 'a stall after the resume still fails');
+});
+
+test('worker: its start counts as a resume for the stall clock', async () => {
+  const s = setup({ a: 'timeline' });
+  await waitingMoves(s, ['a']);
+  const realNow = Date.now;
+  Date.now = () => realNow() + THUMBNAIL_STALL_MS + 1000; // the picker was off past the stall time
+  try {
+    const wk = createWorker({ ...s.deps, guard: async () => ok, log: silent, waitCheckMs: 0 });
+    wk.kick();
+    await wk.idle();
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal(row(s.queue), null, 'still waiting, not failed');
 });
 
 test('thumbnails: Retry after a stall checks again without redoing the move', async () => {
