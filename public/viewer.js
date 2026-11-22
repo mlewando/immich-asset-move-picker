@@ -25,7 +25,7 @@ export function Viewer({ items, index, selected, isSelectable, onClose, onNav, o
   useEffect(() => setPlayLive(false), [item?.id]);
 
   // The focus goes to the viewer itself, not to a button: Space and Enter must not press one
-  // by accident. Again when the focused button is gone with the photo (Play LIVE, Select).
+  // by accident. Also when moving to another photo removes the focused button (Play LIVE, Select).
   const root = useRef(null);
   useEffect(() => {
     if (!root.current?.contains(document.activeElement)) root.current?.focus({ preventScroll: true });

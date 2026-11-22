@@ -473,7 +473,9 @@ function App() {
   // the photo last shown, so the keyboard carries on from there, not from the photo first opened.
   const viewerOpen = viewerIndex >= 0;
   const lastShown = useRef(null);
-  if (viewerOpen) lastShown.current = items[viewerIndex].id;
+  if (viewerOpen) lastShown.current = route.asset;
+  // An effect after the paint, not a layout effect: from a layout effect the scroll does not hold
+  // when the viewer closes through history.back().
   useEffect(() => {
     if (viewerOpen || !lastShown.current) return;
     const tile = document.querySelector(`.tile[data-id="${lastShown.current}"]`);
