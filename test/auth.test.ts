@@ -135,6 +135,7 @@ test('without a session: only a document request goes to the login, whatever its
     assert.deepEqual(res.cookies, [], `${dest}: no login started`);
   }
   assert.equal((await get('/family', 'document')).statusCode, 302);
+  assert.equal((await get('/api/status', 'document')).statusCode, 401, 'the path rule still holds');
   assert.equal((await get('/family')).statusCode, 302, 'no header: the path decides, as before');
   await app.close();
 });

@@ -409,6 +409,18 @@ app.addHook('onRequest', async (req) => {
 });
 app.post('/oauth2/sign_out', async () => ({ next: '/dev' }));
 
+// The pages the real login shows outside the app, as it would send them. Their links lead back
+// here instead of to a provider.
+const DEV_LOGOUT = new URL(`http://127.0.0.1:${PORT}/dev`);
+const LOGIN_PAGES: Record<string, () => Notice> = {
+  'signed out': notices.signedOut,
+  'login took too long': notices.stale,
+  'login did not succeed': () => notices.failed(502),
+  'refused by the provider': () => notices.refused(null, DEV_LOGOUT),
+  'refused by the picker (not in an allowed group)': () => notices.refused('outsider@example.test', DEV_LOGOUT),
+  'refused, no logout URL set': () => notices.refused('outsider@example.test', null),
+};
+
 // The scenarios: a list, and a switch that starts it afresh and opens the page that shows it.
 app.get('/dev', async (_req, reply) => {
   const rows = Object.entries(SCENARIOS)
@@ -427,17 +439,6 @@ app.get('/dev', async (_req, reply) => {
       `<main class="p-6"><h1 class="text-base font-semibold">Dev UI scenarios</h1><ul class="divide-y divide-white/5">${rows}</ul>` +
       `<h2 class="mt-6 text-base font-semibold">Login pages</h2><ul class="divide-y divide-white/5">${pages}</ul></main>`);
 });
-// The pages the real login shows outside the app, as it would send them. Their links lead back
-// here instead of to a provider.
-const DEV_LOGOUT = new URL(`http://127.0.0.1:${PORT}/dev`);
-const LOGIN_PAGES: Record<string, () => Notice> = {
-  'signed out': notices.signedOut,
-  'login took too long': notices.stale,
-  'login did not succeed': () => notices.failed(502),
-  'refused by the provider': () => notices.refused(null, DEV_LOGOUT),
-  'refused by the picker (not in an allowed group)': () => notices.refused('outsider@example.test', DEV_LOGOUT),
-  'refused, no logout URL set': () => notices.refused('outsider@example.test', null),
-};
 app.get<{ Params: { name: string } }>('/dev/login-page/:name', async (req, reply) => {
   const notice = LOGIN_PAGES[req.params.name];
   if (!notice) return reply.code(404).send({ error: `no login page ${req.params.name}` });

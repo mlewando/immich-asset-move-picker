@@ -7,9 +7,9 @@
 // - every REFRESH_MS a refresh-token grant re-reads the user from the provider, so a disabled
 //   user or one removed from the allowed groups is out within that time. A provider that can't be
 //   reached is retried for REFRESH_GRACE_MS, then the session ends too.
-// Background requests (/api/, /media/) without a session get 401, never a login redirect: a grid
-// of hundreds of tiles must not start hundreds of logins. The page reloads once and that 1
-// navigation logs in (public/expiry.js).
+// Background requests (/api/, /media/, and anything a browser marks as not a document) without a
+// session get 401, never a login redirect: a grid of hundreds of tiles must not start hundreds of
+// logins. The page reloads once and that 1 navigation logs in (public/expiry.js).
 import { isIP } from 'node:net';
 import fastifySession from '@fastify/session';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
