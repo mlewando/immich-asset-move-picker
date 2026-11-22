@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { addRange, applyMarquee, fileCount, groupByDay, rectsIntersect, toggleDay, toggleOne } from '../public/selection.js';
+import { addRange, applyMarquee, fileCount, groupByDay, rectsIntersect, selectAll, toggleDay, toggleOne } from '../public/selection.js';
 
 type It = { id: string; day: string; noOrigin?: boolean };
 const items: It[] = [
@@ -66,4 +66,8 @@ test('toggleDay selects the whole day, then unselects it', () => {
   assert.deepEqual(ids(s1), ['b', 'd'], 'partially selected day → select all selectable');
   assert.deepEqual(ids(toggleDay(s1, day, selectable)), [], 'fully selected → unselect');
   assert.deepEqual(ids(toggleDay(new Set(), [items[2]!], selectable)), [], 'no selectable item → no-op');
+});
+
+test('selectAll selects every selectable item, nothing else', () => {
+  assert.deepEqual(ids(selectAll(items, selectable)), ['a', 'b', 'd', 'e']);
 });

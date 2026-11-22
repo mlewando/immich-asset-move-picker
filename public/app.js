@@ -10,7 +10,7 @@ import { Icon } from './icons.js';
 import { keepAlive } from './expiry.js';
 import { JobsIndicator, StorageTemplateReminder, useJobs } from './jobs.js';
 import { QueuePage } from './queue.js';
-import { addRange, fileCount, toggleDay, toggleOne } from './selection.js';
+import { addRange, fileCount, selectAll, toggleDay, toggleOne } from './selection.js';
 import { startMember } from './start.js';
 import { Viewer } from './viewer.js';
 
@@ -169,14 +169,16 @@ function SidebarBody({ members, route, user, jobs, collapsed, onNavigate, onTogg
     html`<div class=${`flex h-9 items-end px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-neutral-500 transition-opacity ${collapsed ? 'opacity-0' : ''}`} aria-hidden=${collapsed}>${text}</div>`;
   const count = (n, tone, title) =>
     n > 0 &&
-    html`<span class=${`shrink-0 rounded-full px-2 text-xs ${tone === 'bad' ? 'bg-rose-500/20 text-rose-200' : 'bg-sky-500/20 text-sky-200'}`} title=${title}>${n}</span>`;
+    html`<span class=${`shrink-0 rounded-full px-2 text-xs ${tone === 'bad' ? 'bg-rose-500/20 text-rose-200' : 'bg-sky-500/20 text-sky-200'}`} title=${title}>${n}<span class="sr-only"> ${title.toLowerCase()}</span></span>`;
+  // Collapsed, the link is read by its label alone, so the label carries the counts.
+  const queueLabel = ['Queue', failed > 0 && `${failed} failed`, active > 0 && `${active} in progress`].filter(Boolean).join(', ');
   return html`
     <nav class="min-h-0 flex-1 overflow-y-auto overflow-x-hidden" aria-label="Members and pages">
       ${label('Members')}
       <div class="space-y-0.5">
         ${members.map(
           (m) => html`<${NavItem} href=${`/members/${m.id}`} active=${route.kind === 'member' && route.id === m.id} label=${m.name} collapsed=${collapsed} onNavigate=${onNavigate}>
-            <span class=${`grid size-8 shrink-0 place-items-center rounded-full text-sm font-semibold text-white ${avatarColor(m.id)}`}>
+            <span class=${`grid size-8 shrink-0 place-items-center rounded-full text-sm font-semibold text-white ${avatarColor(m.id)}`} aria-hidden="true">
               ${(m.name || m.email).slice(0, 1).toUpperCase()}
             </span>
             <span class="min-w-0">
@@ -192,7 +194,7 @@ function SidebarBody({ members, route, user, jobs, collapsed, onNavigate, onTogg
           <span class="grid size-8 shrink-0 place-items-center rounded-full bg-neutral-700 text-neutral-200"><${Icon} name="family" class="size-4" /></span>
           <span class="min-w-0 truncate font-medium">Family account</span>
         </${NavItem}>
-        <${NavItem} href="/queue" active=${route.kind === 'queue'} label="Queue" collapsed=${collapsed} onNavigate=${onNavigate}>
+        <${NavItem} href="/queue" active=${route.kind === 'queue'} label=${queueLabel} collapsed=${collapsed} onNavigate=${onNavigate}>
           <span class="relative grid size-8 shrink-0 place-items-center rounded-full bg-neutral-700 text-neutral-200">
             <${Icon} name="queue" class="size-4" />
             ${collapsed && failed > 0 && html`<span class="absolute right-0 top-0 size-2.5 rounded-full bg-rose-400 ring-2 ring-neutral-950" title=${`${failed} failed`} />`}
@@ -235,6 +237,7 @@ function Sidebar(props) {
   }, [drawerOpen]);
   return html`
     <aside
+      data-behind-panel
       class=${`sticky top-0 hidden h-dvh shrink-0 flex-col overflow-hidden whitespace-nowrap border-r border-white/5 bg-neutral-900/60 px-2 pb-2 transition-[width] duration-200 md:flex ${collapsed ? 'w-[4.5rem]' : 'w-64'}`}
     >
       <${Logo} />
@@ -260,12 +263,14 @@ function TopBar({ title, count, selectedCount, selectedFiles, action, tileSize, 
   if (selectedCount > 0) {
     return html`
       <header class=${`${bar} bg-sky-950`}>
+        <h1 class="sr-only">${title}</h1>
         <button class=${iconBtn} onClick=${onClear} aria-label="Clear selection" title="Clear selection"><${Icon} name="close" /></button>
         <span class="flex-1 truncate text-sm font-medium">${selectedCount} selected${selectedFiles > selectedCount ? ` • ${selectedFiles} files` : ''}</span>
         ${jobs}
         <button
-          class=${`shrink-0 rounded-full bg-sky-500 px-4 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-sky-400 disabled:opacity-40 disabled:hover:bg-sky-500 ${focusRing}`}
+          class=${`shrink-0 rounded-full bg-sky-500 px-4 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-sky-400 disabled:opacity-40 disabled:hover:bg-sky-500 aria-disabled:opacity-40 aria-disabled:hover:bg-sky-500 ${focusRing}`}
           disabled=${action.disabled}
+          aria-disabled=${action.tooMany ? 'true' : undefined}
           title=${action.title}
           onClick=${action.run}
         >${action.label}</button>
@@ -275,7 +280,7 @@ function TopBar({ title, count, selectedCount, selectedFiles, action, tileSize, 
     <header class=${`${bar} bg-neutral-950`}>
       <button class=${`${iconBtn} md:hidden`} onClick=${onMenu} aria-label="Menu" title="Menu"><${Icon} name="menu" /></button>
       <div class="min-w-16 flex-1 truncate">
-        <span class="text-base font-semibold">${title}</span>
+        <h1 class="inline text-base font-semibold">${title}</h1>
         ${count !== null && html`<span class="ml-2 hidden text-sm text-neutral-500 @2xl:inline">${count} items</span>`}
         ${count !== null && html`<span class="hidden text-sm text-neutral-500 @5xl:inline"> • drag to select, Alt+drag to unselect</span>`}
       </div>
@@ -358,6 +363,24 @@ function useToast() {
 }
 
 const LAST_MEMBER_KEY = 'picker.lastMember';
+const MAX_PER_REQUEST = 10_000; // the server takes at most this many photos per Move / Give back
+const APP_NAME = 'Family picker';
+
+/** The grid's Tab stop (its current photo or day button), else the page's content. */
+function focusPhotos() {
+  const el = document.querySelector('[data-photos] [data-nav][tabindex="0"]') ?? document.getElementById('main');
+  if (!el) return;
+  el.focus({ preventScroll: true });
+  // The tile's scroll margin keeps it clear of the sticky top bar.
+  if (el.dataset.nav) (el.closest('.tile') ?? el).scrollIntoView({ block: 'nearest' });
+}
+
+// Whether the focus is about to be lost: it is on the top bar, whose buttons change with the
+// selection, or already nowhere.
+const focusOnTopBar = () => {
+  const a = document.activeElement;
+  return !a || a === document.body || !!a.closest('header');
+};
 
 function App() {
   const route = useRoute();
@@ -425,8 +448,28 @@ function App() {
   // (a live photo moves with its video, a stack whole).
   const isSelectable = useCallback((item) => (route.kind === 'family' ? !item.noOrigin : true), [route.kind]);
 
+  // A selection emptied by the keyboard (Esc, Clear selection, Move / Give back) takes the top
+  // bar's buttons away: the focus goes to the grid then, after the render, not to the page top.
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (!refocus.current) return;
+    refocus.current = false;
+    focusPhotos();
+  });
+  const clearSelection = useCallback((byKeyboard) => {
+    if (byKeyboard && focusOnTopBar()) refocus.current = true;
+    anchor.current = null;
+    setSelected(new Set());
+  }, []);
+
   const readOnly = status?.readOnly ?? true;
-  const runSelected = useCallback(async () => {
+  const tooMany = selected.size > MAX_PER_REQUEST;
+  const runSelected = useCallback(async (e) => {
+    if (selected.size > MAX_PER_REQUEST) {
+      setToast({ kind: 'warn', text: `Up to ${MAX_PER_REQUEST} photos at a time` });
+      return;
+    }
+    const byKeyboard = e?.detail === 0;
     const ids = [...selected];
     // Give back deletes family copies (each has an original that goes back first): ask once.
     const ask = `Give back ${ids.length} photo${ids.length === 1 ? '' : 's'}? The originals return to the members' timelines and these family copies are deleted.`;
@@ -434,6 +477,7 @@ function App() {
     try {
       const r = route.kind === 'family' ? await api.giveBack(ids) : await api.move(route.id, ids);
       // Queued now or already: either way each has an unfinished job, so it leaves the grid.
+      if (byKeyboard && focusOnTopBar()) refocus.current = true;
       drop(ids);
       // What can't be moved shows up as failed in the jobs indicator (the worker decides).
       // The files of what this click queued, when more than its photos (live photos, stacks).
@@ -449,11 +493,14 @@ function App() {
   const action = {
     label: route.kind === 'family' ? 'Give back' : 'Move to family',
     disabled: readOnly,
+    tooMany,
     title: readOnly
       ? 'Read-only: the upgrade guard failed'
-      : route.kind === 'family'
-        ? 'Put the originals back on the members’ timelines and delete these family copies'
-        : 'Copy to the family account and archive the originals',
+      : tooMany
+        ? `Up to ${MAX_PER_REQUEST} photos at a time`
+        : route.kind === 'family'
+          ? 'Put the originals back on the members’ timelines and delete these family copies'
+          : 'Copy to the family account and archive the originals',
     run: runSelected,
   };
   const onRetry = useCallback(
@@ -493,8 +540,9 @@ function App() {
     },
     [items, viewerIndex, gridKey],
   );
-  // The viewer closed (Esc, its button, the browser's Back): the focus goes to the magnifier of
-  // the photo last shown, so the keyboard carries on from there, not from the photo first opened.
+  // The viewer closed (Esc, its button, the browser's Back): the focus goes to the photo last
+  // shown (the grid's Tab stop follows it), so the keyboard carries on from there, not from the
+  // photo first opened.
   const viewerOpen = viewerIndex >= 0;
   const lastShown = useRef(null);
   if (viewerOpen) lastShown.current = route.asset;
@@ -504,7 +552,7 @@ function App() {
     if (viewerOpen || !lastShown.current) return;
     const tile = document.querySelector(`.tile[data-id="${lastShown.current}"]`);
     if (!tile) return; // gone meanwhile (a job moved it)
-    tile.querySelector('[data-open]').focus({ preventScroll: true });
+    tile.querySelector('[data-nav]').focus({ preventScroll: true });
     // The whole tile, not just its magnifier; its scroll margin keeps it clear of the top bar.
     tile.scrollIntoView({ block: 'nearest' });
   }, [viewerOpen]);
@@ -533,10 +581,56 @@ function App() {
   const onMenu = useCallback(() => setDrawerOpen(true), []);
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
 
+  // On a timeline: Esc clears the selection, Ctrl/Cmd+A selects every photo. Not while
+  // something is open on top (viewer, menu, a dropdown: their own Esc closes them first). The
+  // latest state comes through a ref: keys pressed quickly can arrive before an effect re-subscribes.
+  const keyState = useRef(null);
+  keyState.current = { items, selected, isSelectable, on: items && route.kind !== 'queue' && !viewerOpen && !drawerOpen };
+  useEffect(() => {
+    const onKey = (e) => {
+      const { items, selected, isSelectable, on } = keyState.current;
+      if (!on || document.querySelector('[role="dialog"]')) return;
+      if (e.key === 'Escape' && selected.size > 0) {
+        clearSelection(true);
+      } else if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'a') {
+        if (e.target.closest?.('input, textarea, select, [contenteditable]')) return; // the field's own select-all
+        e.preventDefault();
+        setSelected(selectAll(items, isSelectable));
+      }
+    };
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [clearSelection]);
+
+  // The tab's title names the page; a screen reader hears the new page's name when it changes
+  // (not on the 1st one: the title says it). The focus stays where it was, e.g. on the sidebar.
+  useEffect(() => {
+    document.title = title ? `${title} – ${APP_NAME}` : APP_NAME;
+  }, [title]);
+  const pageKey = route.kind === 'member' ? `member:${route.id}` : route.kind;
+  const [announcement, setAnnouncement] = useState('');
+  const announcedPage = useRef(null);
+  useEffect(() => {
+    if (!title || route.kind === 'none') return;
+    if (announcedPage.current !== null && announcedPage.current !== pageKey) setAnnouncement(title);
+    announcedPage.current = pageKey;
+  }, [pageKey, title]);
+  const skipTo = (e) => {
+    e.preventDefault();
+    if (route.kind === 'queue') document.getElementById('main').focus();
+    else focusPhotos();
+  };
+
   // With the queue's side panel open (lg and up), the content column makes room for it, so the
   // top bar and its dropdowns end where the panel starts.
   return html`
     <div class="flex min-h-dvh" inert=${viewerOpen}>
+      <a
+        href="#main"
+        data-behind-panel
+        class="fixed left-2 top-2 z-50 -translate-y-20 rounded-full bg-sky-500 px-4 py-2 text-sm font-semibold text-white outline-none focus:translate-y-0 focus-visible:ring-2 focus-visible:ring-sky-200"
+        onClick=${skipTo}
+      >${route.kind === 'queue' ? 'Skip to queue' : 'Skip to photos'}</a>
       <${Sidebar}
         members=${members}
         route=${route}
@@ -548,26 +642,28 @@ function App() {
         onCloseDrawer=${closeDrawer}
       />
       <div class="min-w-0 flex-1 lg:has-[[data-panel]]:pr-[28rem]">
-        <${TopBar}
-          title=${title}
-          count=${items && route.kind !== 'queue' ? items.length : null}
-          selectedCount=${selected.size}
-          selectedFiles=${selected.size ? fileCount(items ?? [], selected) : 0}
-          action=${action}
-          tileSize=${tileSize}
-          setTileSize=${setTileSize}
-          onClear=${() => setSelected(new Set())}
-          onMenu=${onMenu}
-          jobs=${html`<${JobsIndicator} summary=${summary} readOnly=${readOnly} onRetry=${onRetry} onOpenJob=${openJob} onOpenQueue=${openQueue} />`}
-        />
-        ${route.kind === 'member' && html`<${FilterBar} albums=${albums} filter=${route.filter} onChange=${onFilter} />`}
-        <${StorageTemplateReminder} count=${movedCount} onDismiss=${() => setMovedCount(0)} />
-        ${status?.readOnly &&
-        html`<div class="flex items-start gap-2 border-b border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-200" role="alert">
-          <${Icon} name="alert" class="mt-0.5 size-4 shrink-0" />
-          <span><strong class="font-semibold">Read-only.</strong> ${status.problems.join(' • ')}</span>
-        </div>`}
-        <main class="px-2 pb-24 sm:px-4">
+        <div class="contents" data-behind-panel>
+          <${TopBar}
+            title=${title}
+            count=${items && route.kind !== 'queue' ? items.length : null}
+            selectedCount=${selected.size}
+            selectedFiles=${selected.size ? fileCount(items ?? [], selected) : 0}
+            action=${action}
+            tileSize=${tileSize}
+            setTileSize=${setTileSize}
+            onClear=${(e) => clearSelection(e.detail === 0)}
+            onMenu=${onMenu}
+            jobs=${html`<${JobsIndicator} summary=${summary} readOnly=${readOnly} onRetry=${onRetry} onOpenJob=${openJob} onOpenQueue=${openQueue} />`}
+          />
+          ${route.kind === 'member' && html`<${FilterBar} albums=${albums} filter=${route.filter} onChange=${onFilter} />`}
+          <${StorageTemplateReminder} count=${movedCount} onDismiss=${() => setMovedCount(0)} />
+          ${status?.readOnly &&
+          html`<div class="flex items-start gap-2 border-b border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-200" role="alert">
+            <${Icon} name="alert" class="mt-0.5 size-4 shrink-0" />
+            <span><strong class="font-semibold">Read-only.</strong> ${status.problems.join(' • ')}</span>
+          </div>`}
+        </div>
+        <main id="main" tabindex="-1" class="px-2 pb-24 outline-none sm:px-4">
           ${route.kind === 'queue' &&
           html`<${QueuePage}
             summary=${summary}
@@ -606,6 +702,7 @@ function App() {
       }`}
       role="status"
     >${toast.text}</div>`}
+    <div class="sr-only" aria-live="polite">${announcement}</div>
     ${viewerOpen &&
     html`<${Viewer}
       items=${items}
