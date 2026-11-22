@@ -62,7 +62,7 @@ class Tile extends Component {
         data-selectable=${selectable ? '1' : '0'}
       >
         <button
-          class=${`absolute inset-0 block size-full photo-ring outline-none ${selectable ? 'cursor-pointer' : 'cursor-zoom-in'}`}
+          class=${`absolute inset-0 block size-full photo-ring ${selectable ? 'cursor-pointer' : 'cursor-zoom-in'}`}
           aria-pressed=${selectable ? selected : undefined}
           aria-label=${selectable ? `${selected ? 'Unselect' : 'Select'} ${item.fileName}` : `Open ${item.fileName}`}
           title=${item.fileName}
