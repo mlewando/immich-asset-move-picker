@@ -5,7 +5,8 @@
 //   - a stack: picked by its primary, moves whole; the family copies are stacked again, same
 //     primary first;
 //   - the family account already has these bytes (an earlier move, another member's copy, put
-//     there by hand, or this move before a crash) → that asset, no upload;
+//     there by hand, or this move before a crash) → that asset, no upload (the result counts the
+//     uploads, for the job history);
 //   - carries the metadata the member edited in Immich, unless the family copy has edits of its
 //     own (then they are kept; a repeat after a crash sees our own edit and skips too).
 import type { ImmichApi, MetadataPatch } from './api.ts';
@@ -54,14 +55,22 @@ export type CopyDeps = {
   api: Pick<ImmichApi, 'upload' | 'updateMetadata' | 'linkLivePhoto' | 'createStack'>;
 };
 
-/** familyAssetId: the copy of the picked asset; originals: what to archive afterwards. */
-export type CopyResult = { familyAssetId: string; originals: string[] };
+/**
+ * familyAssetId: the copy of the picked asset; originals: what to archive afterwards; uploaded:
+ * how many of the originals this call uploaded (the others' bytes were already in the family
+ * account: there before, or uploaded by an earlier call that then failed). A live photo's video
+ * isn't counted, only its still.
+ */
+export type CopyResult = { familyAssetId: string; originals: string[]; uploaded: number };
 
 export async function copyToFamily(deps: CopyDeps, assetId: string): Promise<CopyResult> {
   const src = await deps.source(assetId);
   if (!src) throw new Error('asset no longer exists');
   const familyId = await deps.familyId();
-  if (!src.stackId) return { familyAssetId: await copyOne(deps, familyId, src), originals: [src.id] };
+  if (!src.stackId) {
+    const copy = await copyOne(deps, familyId, src);
+    return { familyAssetId: copy.id, originals: [src.id], uploaded: copy.uploaded ? 1 : 0 };
+  }
 
   const stack = await deps.stack(src.stackId);
   if (!stack || stack.primaryAssetId !== src.id) throw new Error("part of a stack: move the stack by its primary photo");
@@ -74,9 +83,14 @@ export async function copyToFamily(deps: CopyDeps, assetId: string): Promise<Cop
   // Checked for all before copying any, so a refused member writes nothing.
   for (const m of members) refuseUnmovable(m, familyId);
   const copies: string[] = [];
-  for (const m of members) copies.push(await copyOne(deps, familyId, m));
+  let uploaded = 0;
+  for (const m of members) {
+    const copy = await copyOne(deps, familyId, m);
+    copies.push(copy.id);
+    if (copy.uploaded) uploaded++;
+  }
   if (copies.length > 1 && !(await deps.isStack(copies))) await deps.api.createStack(copies);
-  return { familyAssetId: copies[0]!, originals: members.map((m) => m.id) };
+  return { familyAssetId: copies[0]!, originals: members.map((m) => m.id), uploaded };
 }
 
 function refuseUnmovable(src: SourceAsset, familyId: string): void {
@@ -87,8 +101,8 @@ function refuseUnmovable(src: SourceAsset, familyId: string): void {
   if (src.checksumAlgorithm !== 'sha1') throw new Error(`unexpected checksum algorithm ${src.checksumAlgorithm}`);
 }
 
-/** 1 asset (+ its live-photo video) → its family copy's id. */
-async function copyOne(deps: CopyDeps, familyId: string, src: SourceAsset): Promise<string> {
+/** 1 asset (+ its live-photo video) → its family copy's id, and whether this call uploaded it. */
+async function copyOne(deps: CopyDeps, familyId: string, src: SourceAsset): Promise<{ id: string; uploaded: boolean }> {
   refuseUnmovable(src, familyId);
 
   let videoId: string | undefined;
@@ -111,7 +125,7 @@ async function copyOne(deps: CopyDeps, familyId: string, src: SourceAsset): Prom
 
   const patch = carriedMetadata(src);
   if (Object.keys(patch).length && !(await deps.editedInImmich(id))) await deps.api.updateMetadata(id, patch);
-  return id;
+  return { id, uploaded: !existing };
 }
 
 async function upload(deps: CopyDeps, src: SourceAsset, livePhotoVideoId?: string): Promise<string> {

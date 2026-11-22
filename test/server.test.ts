@@ -196,6 +196,7 @@ test('queue page: sections with each job\'s asset and file name; a job\'s histor
   const m = queue.claimNext()!;
   queue.retryLater(m.id, 'Immich POST /assets: fetch failed', new Date(Date.now() - 1));
   queue.claimNext();
+  queue.advance(m.id, { step: 'copied', outcome: 'unknown' });
   queue.advance(m.id, { step: 'thumbnailed', done: true });
   const g = queue.claimNext()!;
   queue.advance(g.id, { step: 'restored', originals: [ORIGINAL], familyIds: [g.sourceAssetId] });
@@ -213,7 +214,7 @@ test('queue page: sections with each job\'s asset and file name; a job\'s histor
   assert.equal((await call({ queue }, '/api/jobs/list')).statusCode, 400);
 
   const events = (await call({ queue }, `/api/jobs/${m.id}/events`)).json();
-  assert.deepEqual(events.map((e: Record<string, unknown>) => e.type), ['queued', 'retrying', 'done']);
+  assert.deepEqual(events.map((e: Record<string, unknown>) => [e.type, e.outcome]), [['queued', null], ['retrying', null], ['step', 'unknown'], ['done', null]]);
   assert.equal(events[1].message, 'Immich POST /assets: fetch failed');
   assert.equal((await call({ queue }, '/api/jobs/999/events')).statusCode, 404);
   assert.equal((await call({ queue }, '/api/jobs/x/events')).statusCode, 400);

@@ -27,6 +27,8 @@ function fakeImmich(assets: Record<string, string>, units: Record<string, string
   const noThumbs = new Set<string>();
   // Album names per asset id (default none). Not in `calls`: it only feeds the history.
   const albums: Record<string, string[]> = {};
+  // Originals whose bytes the family account already has: not uploaded.
+  const inFamily = new Set<string>();
   const immich: JobDeps['immich'] = {
     async albumsOf(ids) {
       return [...new Set(ids.flatMap((id) => albums[id] ?? []))].sort();
@@ -69,7 +71,10 @@ function fakeImmich(assets: Record<string, string>, units: Record<string, string
         throw e;
       }
       if (assets[id] !== 'timeline') throw new Error(`asset is not on the member's timeline (it is ${assets[id]})`);
-      return { familyAssetId: `fam-${id}`, originals: units[id] ?? [id] };
+      const originals = units[id] ?? [id];
+      const uploaded = originals.filter((o) => !inFamily.has(o));
+      for (const o of uploaded) inFamily.add(o); // a repeat finds them
+      return { familyAssetId: `fam-${id}`, originals, uploaded: uploaded.length };
     },
     async archive(ids) {
       calls.push(`archive:${ids.join(',')}`);
@@ -85,7 +90,7 @@ function fakeImmich(assets: Record<string, string>, units: Record<string, string
       });
     },
   };
-  return { immich, calls, failNext, assets, links, plans, family, noThumbs, albums };
+  return { immich, calls, failNext, assets, links, plans, family, noThumbs, albums, inFamily };
 }
 
 function setup(assets: Record<string, string>, units: Record<string, string[]> = {}) {
@@ -124,6 +129,70 @@ test("move: the history names the originals' albums with the copy step", async (
   await runMove(s.deps, n);
   const plain = s.queue.events(n.id)!.find((e) => e.type === 'step' && e.step === 'copied');
   assert.equal(plain?.message, null, 'no albums, no note');
+});
+
+const copiedEvent = (q: Queue, jobId: number) => {
+  const e = q.events(jobId)!.find((x) => x.step === 'copied' && x.type === 'step')!;
+  return [e.outcome, e.message];
+};
+
+test('move: the history tells a copy from a photo the family account already had', async () => {
+  const s = setup({ a: 'timeline', b: 'timeline' });
+  s.inFamily.add('b');
+  const a = claim(s.queue, 'a');
+  await runMove(s.deps, a);
+  assert.deepEqual(copiedEvent(s.queue, a.id), [null, null], 'uploaded: copied');
+  const b = claim(s.queue, 'b');
+  await runMove(s.deps, b);
+  assert.deepEqual(copiedEvent(s.queue, b.id), ['existing', null]);
+});
+
+test('move: nothing uploaded on a later try → the history does not say who made the copy', async () => {
+  // After a failure tried again on its own, a Retry, and a restart.
+  const later: ((q: Queue, id: number) => void)[] = [
+    (q, id) => q.retryLater(id, 'Immich PUT /assets → HTTP 502', new Date(Date.now() - 1)),
+    (q, id) => (q.fail(id, 'boom'), void q.retry(id)),
+    (q) => void q.resetRunning(),
+  ];
+  for (const earlierTry of later) {
+    const s = setup({ a: 'timeline' });
+    s.inFamily.add('a'); // uploaded by the earlier try, or there before: the same to this one
+    const m = claim(s.queue, 'a');
+    earlierTry(s.queue, m.id);
+    await runMove(s.deps, s.queue.claimNext()!);
+    assert.deepEqual(copiedEvent(s.queue, m.id), ['unknown', null]);
+  }
+
+  // A later try that uploads: copied.
+  const s = setup({ a: 'timeline' });
+  const m = claim(s.queue, 'a');
+  s.queue.retryLater(m.id, 'boom', new Date(Date.now() - 1));
+  await runMove(s.deps, s.queue.claimNext()!);
+  assert.deepEqual(copiedEvent(s.queue, m.id), [null, null]);
+});
+
+test('stack: copied when any of it was uploaded; the 1st try notes the photos already there', async () => {
+  const s = setup({ p: 'timeline', b: 'timeline', c: 'timeline' }, { p: ['p', 'b', 'c'] });
+  s.inFamily.add('b');
+  s.albums.p = ['Holidays'];
+  const m = claim(s.queue, 'p');
+  await runMove(s.deps, m);
+  assert.deepEqual(copiedEvent(s.queue, m.id), [null, '1 of 3 photos already there, not copied • In album: Holidays']);
+
+  // A later try can't tell them from its own earlier uploads: no count.
+  const t = setup({ p: 'timeline', b: 'timeline', c: 'timeline' }, { p: ['p', 'b', 'c'] });
+  t.inFamily.add('b');
+  const n = claim(t.queue, 'p');
+  t.queue.retryLater(n.id, 'boom', new Date(Date.now() - 1));
+  await runMove(t.deps, t.queue.claimNext()!);
+  assert.deepEqual(copiedEvent(t.queue, n.id), [null, null]);
+
+  // None uploaded: already there, as for 1 photo.
+  const u = setup({ p: 'timeline', b: 'timeline' }, { p: ['p', 'b'] });
+  u.inFamily.add('p').add('b');
+  const o = claim(u.queue, 'p');
+  await runMove(u.deps, o);
+  assert.deepEqual(copiedEvent(u.queue, o.id), ['existing', null]);
 });
 
 test('stack: every original archived; the list survives a resume', async () => {

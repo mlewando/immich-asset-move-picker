@@ -66,13 +66,19 @@ const DONE_STEP = {
   deleted: 'Family copy deleted',
 };
 
+// The copy step when nothing was uploaded (the event's outcome).
+const NOT_COPIED = {
+  existing: 'Already in the family account, no copy made',
+  unknown: 'In the family account: copied on an earlier try, or already there',
+};
+
 /** A history line: its text and kind (for its icon and colour). */
 export function eventOf(e) {
   switch (e.type) {
     case 'queued':
       return { text: 'Queued', kind: 'neutral' };
     case 'step':
-      return { text: DONE_STEP[e.step] ?? e.step, kind: 'step' };
+      return { text: NOT_COPIED[e.outcome] ?? DONE_STEP[e.step] ?? e.step, kind: 'step' };
     case 'done':
       return { text: DONE_STEP[e.step] ?? e.step, kind: 'done' };
     case 'waiting':

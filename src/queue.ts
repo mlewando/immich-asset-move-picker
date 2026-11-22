@@ -57,7 +57,11 @@ export type JobEvent = {
   message: string | null;
   // The curator (queued, retried), when known.
   by: string | null;
+  // The 'copied' step when nothing was uploaded: 'existing' = the family account already had the
+  // photo; 'unknown' = it had it on a later try, so maybe from this job's own earlier try.
+  outcome: CopyOutcome | null;
 };
+export type CopyOutcome = 'existing' | 'unknown';
 
 // active = pending + running, oldest first; failed, oldest first; done, newest first.
 export type Section = 'active' | 'failed' | 'done';
@@ -74,8 +78,11 @@ export type Queue = {
   claimNext(): Job | null;
   advance(
     id: number,
-    // note: shown with this step in the job history.
-    patch: { step: Step; familyAssetId?: string; originals?: string[]; familyIds?: string[]; done?: boolean; note?: string },
+    // note: shown with this step in the job history; outcome: see JobEvent.
+    patch: {
+      step: Step; familyAssetId?: string; originals?: string[]; familyIds?: string[]; done?: boolean; note?: string;
+      outcome?: CopyOutcome;
+    },
   ): void;
   fail(id: number, error: string): void;
   /** Back to pending after a transient failure, claimed again from `at` on; counts the attempt. */
@@ -160,6 +167,8 @@ export const MIGRATIONS = [
      by       TEXT
    );
    CREATE INDEX job_event_job ON job_event (job_id, id);`,
+  // How a step went, where its history line depends on it (see JobEvent.outcome).
+  `ALTER TABLE job_event ADD COLUMN outcome TEXT;`,
 ];
 
 const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ')`;
@@ -197,7 +206,7 @@ export function openQueue(path: string): Queue {
     ),
     // 1 history entry, at the job's current step.
     event: db.prepare(
-      `INSERT INTO job_event (job_id, type, step, message, by) SELECT id, ?, step, ?, ? FROM job WHERE id = ?`,
+      `INSERT INTO job_event (job_id, type, step, message, by, outcome) SELECT id, ?, step, ?, ?, ? FROM job WHERE id = ?`,
     ),
     resumedEvents: db.prepare(
       `INSERT INTO job_event (job_id, type, step, message) SELECT id, 'resumed', step, 'picker restarted' FROM job WHERE status = 'running'`,
@@ -256,7 +265,7 @@ export function openQueue(path: string): Queue {
         WHERE status = 'done' AND id < ? AND (NOT ? OR ${FAILURES} > 0) ORDER BY id DESC LIMIT ?`,
     ),
     exists: db.prepare(`SELECT 1 FROM job WHERE id = ?`),
-    events: db.prepare(`SELECT at, type, step, message, by FROM job_event WHERE job_id = ? ORDER BY id`),
+    events: db.prepare(`SELECT at, type, step, message, by, outcome FROM job_event WHERE job_id = ? ORDER BY id`),
     pruneEvents: db.prepare(
       `DELETE FROM job_event WHERE job_id IN (SELECT id FROM job WHERE status = 'done' AND updated_at < ?)`,
     ),
@@ -272,8 +281,13 @@ export function openQueue(path: string): Queue {
     ),
   };
 
-  const event = (id: number, type: JobEvent['type'], message: string | null = null, by: string | null = null) =>
-    void sql.event.run(type, message, by, id);
+  const event = (
+    id: number,
+    type: JobEvent['type'],
+    message: string | null = null,
+    by: string | null = null,
+    outcome: CopyOutcome | null = null,
+  ) => void sql.event.run(type, message, by, outcome, id);
 
   const toListed = (r: Row): ListedJob => ({
     ...toJob(r),
@@ -302,11 +316,11 @@ export function openQueue(path: string): Queue {
       const r = sql.claim.get() as Row | undefined;
       return r ? toJob(r) : null;
     },
-    advance(id, { step, familyAssetId, originals, familyIds, done, note }) {
+    advance(id, { step, familyAssetId, originals, familyIds, done, note, outcome }) {
       const json = (v?: string[]) => (v ? JSON.stringify(v) : null);
       transaction(db, () => {
         sql.advance.run(step, familyAssetId ?? null, json(originals), json(familyIds), done ? 1 : 0, id);
-        event(id, done ? 'done' : 'step', note ?? null);
+        event(id, done ? 'done' : 'step', note ?? null, null, outcome ?? null);
       });
     },
     fail: (id, error) =>
@@ -360,6 +374,7 @@ export function openQueue(path: string): Queue {
         step: r.step as Step,
         message: (r.message as string | null) ?? null,
         by: (r.by as string | null) ?? null,
+        outcome: (r.outcome as CopyOutcome | null) ?? null,
       }));
     },
     prune: (before) =>

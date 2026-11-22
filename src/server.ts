@@ -390,6 +390,7 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
                 step: { type: 'string' },
                 message: nullable('string'),
                 by: nullable('string'),
+                outcome: nullable('string'),
               },
             },
           },

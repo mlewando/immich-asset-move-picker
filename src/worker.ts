@@ -48,10 +48,20 @@ export async function runMove(deps: JobDeps, job: Job): Promise<'done' | 'waitin
     const copy = await deps.immich.copyToFamily(job.sourceAssetId);
     step = 'copied';
     originals = copy.originals;
+    // For the history: was the photo copied, or already there? Only the 1st try can tell: a
+    // failure, a Retry or a restart each leave an entry, and a try after one finds what the
+    // earlier try uploaded just like a photo that was there all along.
+    const firstTry = (deps.queue.events(job.id)?.length ?? 0) <= 1;
+    const outcome = copy.uploaded > 0 ? undefined : firstTry ? 'existing' : 'unknown';
+    const already = originals.length - copy.uploaded;
+    const notes: string[] = [];
+    if (firstTry && copy.uploaded > 0 && already > 0) notes.push(`${already} of ${originals.length} photos already there, not copied`);
     // Only for the history: the family copy is not put into the member's albums.
     const albums = await deps.immich.albumsOf(originals);
-    const note = albums.length ? `In album${albums.length > 1 ? 's' : ''}: ${albums.join(', ')}` : undefined;
-    deps.queue.advance(job.id, { step, familyAssetId: copy.familyAssetId, originals, note });
+    if (albums.length) notes.push(`In album${albums.length > 1 ? 's' : ''}: ${albums.join(', ')}`);
+    deps.queue.advance(job.id, {
+      step, familyAssetId: copy.familyAssetId, originals, note: notes.length ? notes.join(' • ') : undefined, outcome,
+    });
   }
   // `originals` is recorded together with 'copied', so it is set from here on. The fallback (just
   // the asset itself) only covers a row advanced without it, as the resume tests do.
