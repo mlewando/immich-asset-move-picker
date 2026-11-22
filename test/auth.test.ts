@@ -256,19 +256,20 @@ test('login: a callback without its login cookie, or outside the allowed groups,
 const LOGOUT = new URL('https://auth.test/logout?rd=https%3A%2F%2Fpicker.test%2Fsigned-out&x="1"');
 const linkOf = (body: string) => /<a [^>]*href="([^"]*)">([^<]*)<\/a>/.exec(body)?.slice(1, 3);
 const outsider = { codeGrant: async () => ({ ...ANNA, who: { ...ANNA.who, email: '<b>@example.org', groups: ['family'] } }) };
+/** A login started in this browser, answered by the provider with an error; `state` overrides the login's own. */
+const providerError = async (app: FastifyInstance, error: string, state?: string) => {
+  const c = loginCookieOf(await app.inject('/oauth2/start'));
+  return app.inject({ url: `/oauth2/callback?error=${error}&state=${state ?? c.state}`, cookies: { [c.name]: c.value } });
+};
 
 test('login refused by the provider: says so, and the way on is its logout page, not "Try again"', async () => {
   let grants = 0;
   const { app } = await makeApp(fakeOidc({ codeGrant: async () => (grants++, ANNA) }).oidc, baseConfig({ logoutUrl: LOGOUT }));
-  const start = await app.inject('/oauth2/start');
-  const c = loginCookieOf(start);
-  const denied = (state: string) => app.inject({ url: `/oauth2/callback?error=access_denied&state=${state}`, cookies: { [c.name]: c.value } });
-
-  const stale = await denied('not-this-login');
+  const stale = await providerError(app, 'access_denied', 'not-this-login');
   assert.equal(stale.statusCode, 400, 'an answer to no login of this browser is not believed');
   assert.deepEqual(linkOf(stale.body), ['/', 'Try again']);
 
-  const cb = await denied(c.state);
+  const cb = await providerError(app, 'access_denied');
   assert.equal(cb.statusCode, 403);
   assert.match(cb.body, /This account may not use the picker\./);
   assert.deepEqual(linkOf(cb.body), [LOGOUT.href.replaceAll('&', '&amp;'), 'Log in with another account']);
@@ -304,9 +305,7 @@ test('login failed for another reason: "Try again" stays', async () => {
   assert.match(cb.body, /The login did not succeed\./);
   assert.deepEqual(linkOf(cb.body), ['/', 'Try again']);
   // Another error from the provider is not a refused account.
-  const start = await app.inject('/oauth2/start');
-  const c = loginCookieOf(start);
-  const other = await app.inject({ url: `/oauth2/callback?error=server_error&state=${c.state}`, cookies: { [c.name]: c.value } });
+  const other = await providerError(app, 'server_error');
   assert.deepEqual(linkOf(other.body), ['/', 'Try again']);
   await app.close();
 });
