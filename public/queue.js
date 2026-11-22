@@ -14,6 +14,23 @@ const html = htm.bind(h);
 
 const focusRing = 'outline-none focus-visible:ring-2 focus-visible:ring-sky-400';
 const PANEL_MS = 120; // the side panel's slide out (animate-panel-out in styles/app.css)
+const WIDE = '(min-width: 64rem)'; // Tailwind's lg: from here the panel sits beside the page
+
+function useMatches(query) {
+  const [matches, setMatches] = useState(() => matchMedia(query).matches);
+  useEffect(() => {
+    const mq = matchMedia(query);
+    const update = () => setMatches(mq.matches);
+    update();
+    mq.addEventListener('change', update);
+    return () => mq.removeEventListener('change', update);
+  }, [query]);
+  return matches;
+}
+
+// What the full-screen panel covers (marked data-behind-panel): inert while it is open, so
+// neither Tab nor a screen reader's swipe leaves the panel.
+const setBehindInert = (on) => document.querySelectorAll('[data-behind-panel]').forEach((el) => el.toggleAttribute('inert', on));
 
 /**
  * 1 section, loaded page by page. Reloads every page shown so far whenever `refreshKey` changes
@@ -245,6 +262,13 @@ function Detail({ job, closing, memberName, readOnly, onRetry, onClose }) {
     document.documentElement.classList.add('max-lg:overflow-hidden');
     return () => document.documentElement.classList.remove('max-lg:overflow-hidden');
   }, []);
+  // Below lg the panel covers the page: a modal dialog then. Resizing across lg switches it.
+  const modal = !useMatches(WIDE) && !closing;
+  useEffect(() => {
+    if (!modal) return;
+    setBehindInert(true);
+    return () => setBehindInert(false);
+  }, [modal]);
   useEffect(() => {
     if (closing) return;
     const onKey = (e) => e.key === 'Escape' && onClose();
@@ -259,6 +283,8 @@ function Detail({ job, closing, memberName, readOnly, onRetry, onClose }) {
     <aside
       data-panel=${closing ? undefined : ''}
       class=${`fixed inset-0 z-40 flex flex-col bg-neutral-900 shadow-2xl lg:inset-y-0 lg:left-auto lg:right-0 lg:z-30 lg:w-[28rem] lg:border-l lg:border-white/5 ${closing ? 'motion-safe:animate-panel-out' : 'motion-safe:animate-panel-in'}`}
+      role=${modal ? 'dialog' : undefined}
+      aria-modal=${modal ? 'true' : undefined}
       aria-labelledby="job-detail-title"
       inert=${closing}
     >
@@ -347,7 +373,9 @@ export function QueuePage({ summary, members, tileSize, readOnly, onRetry, jobId
   const close = useCallback(() => {
     const id = jobId;
     onSelectJob(null);
-    // Back to the tile it was opened from, for keyboard users.
+    // Back to the tile it was opened from, for keyboard users. The page behind stops being inert
+    // now, not when the panel's effect cleans up (later): an inert tile can't take the focus.
+    setBehindInert(false);
     setTimeout(() => document.querySelector(`[data-job="${id}"]`)?.focus({ preventScroll: true }));
   }, [jobId, onSelectJob]);
 
@@ -366,7 +394,7 @@ export function QueuePage({ summary, members, tileSize, readOnly, onRetry, jobId
   }
 
   return html`
-    <div class="pb-8">
+    <div class="pb-8" data-behind-panel>
       <${Section} id="failed" title="Failed" count=${summary?.failed.length} open=${open.failed} onToggle=${toggle('failed')} data=${failed} empty="Nothing failed.">
         <div class="grid grid-cols-[repeat(auto-fill,minmax(min(24rem,100%),1fr))] gap-2">
           ${failed.jobs?.map(
