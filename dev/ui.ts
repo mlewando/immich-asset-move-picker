@@ -8,6 +8,7 @@
 // Never listen on anything but loopback.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { notices, sendNotice, type Notice } from '../src/auth.ts';
 import type { GridItem, GuardResult } from '../src/immich/index.ts';
 import { openQueue, type Job, type Queue, type Step } from '../src/queue.ts';
 import { buildApp, type ServerImmich } from '../src/server.ts';
@@ -417,10 +418,30 @@ app.get('/dev', async (_req, reply) => {
         `<div class="text-sm text-neutral-400">${s.about}</div></li>`,
     )
     .join('');
+  const pages = Object.keys(LOGIN_PAGES)
+    .map((name) => `<li class="py-2"><a class="text-sky-300" href="/dev/login-page/${encodeURIComponent(name)}">${name}</a></li>`)
+    .join('');
   return reply
     .type('text/html')
     .send(`<!doctype html><meta charset="utf-8"><title>Dev UI scenarios</title><link rel="stylesheet" href="/app.css">` +
-      `<main class="p-6"><h1 class="text-base font-semibold">Dev UI scenarios</h1><ul class="divide-y divide-white/5">${rows}</ul></main>`);
+      `<main class="p-6"><h1 class="text-base font-semibold">Dev UI scenarios</h1><ul class="divide-y divide-white/5">${rows}</ul>` +
+      `<h2 class="mt-6 text-base font-semibold">Login pages</h2><ul class="divide-y divide-white/5">${pages}</ul></main>`);
+});
+// The pages the real login shows outside the app, as it would send them. Their links lead back
+// here instead of to a provider.
+const DEV_LOGOUT = new URL(`http://127.0.0.1:${PORT}/dev`);
+const LOGIN_PAGES: Record<string, () => Notice> = {
+  'signed out': notices.signedOut,
+  'login took too long': notices.stale,
+  'login did not succeed': () => notices.failed(502),
+  'refused by the provider': () => notices.refused(null, DEV_LOGOUT),
+  'refused by the picker (not in an allowed group)': () => notices.refused('outsider@example.test', DEV_LOGOUT),
+  'refused, no logout URL set': () => notices.refused('outsider@example.test', null),
+};
+app.get<{ Params: { name: string } }>('/dev/login-page/:name', async (req, reply) => {
+  const notice = LOGIN_PAGES[req.params.name];
+  if (!notice) return reply.code(404).send({ error: `no login page ${req.params.name}` });
+  return sendNotice(reply, notice());
 });
 app.get<{ Params: { name: string } }>('/dev/scenario/:name', async (req, reply) => {
   const s = SCENARIOS[req.params.name];

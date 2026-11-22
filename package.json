@@ -26,7 +26,8 @@
     "dev:css": "tailwindcss -i styles/app.css -o public/app.css --watch",
     "pretest": "npm run build:css",
     "prestart": "npm run build:css",
-    "predev:app": "npm run build:css"
+    "predev:app": "npm run build:css",
+    "predev:app:auth": "npm run build:css"
   },
   "dependencies": {
     "@fastify/basic-auth": "^6.3.1",

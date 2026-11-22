@@ -54,6 +54,29 @@
   }
 }
 
+/* The pages shown instead of the app (signed out, login refused), written by src/auth.ts. Named
+   classes rather than utilities in the markup: only public/ is scanned for class names. */
+@layer components {
+  .notice {
+    @apply mx-auto flex min-h-dvh max-w-sm flex-col items-center justify-center gap-3 p-6 text-center;
+  }
+  .notice-icon {
+    @apply size-12;
+  }
+  .notice-title {
+    @apply text-sm font-semibold text-neutral-400;
+  }
+  .notice-text {
+    @apply text-base break-words;
+  }
+  .notice-hint {
+    @apply text-sm text-neutral-400;
+  }
+  .notice-link {
+    @apply mt-3 rounded-full bg-sky-500 px-4 py-1.5 text-sm font-semibold text-white outline-none transition-colors hover:bg-sky-400 focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-950;
+  }
+}
+
 /* The ring of a button filled by a photo: focused, or (aria-current) the one shown in the side
    panel. Drawn above the photo, because a ring on the button itself is painted under it, and
    inside the button, because a day and the side panel clip what is drawn outside. A soft blue
