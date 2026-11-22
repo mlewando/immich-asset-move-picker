@@ -64,9 +64,11 @@ const TIMELINE_SQL = (extraColumns: string, extraWhere = '') => `
          END AS files
          ${extraColumns}
     FROM asset a
-         -- The stack's live members, and how many of them are live photos (1 file more each).
+         -- The stack's live members, and how many of them are live photos (1 file more each). Not
+         -- looked up for a photo in no stack.
          CROSS JOIN LATERAL (SELECT count(*)::int AS size, count(s."livePhotoVideoId")::int AS live FROM asset s
-                              WHERE s."stackId" = a."stackId" AND s."deletedAt" IS NULL AND s.status = 'active') sm
+                              WHERE a."stackId" IS NOT NULL AND s."stackId" = a."stackId"
+                                AND s."deletedAt" IS NULL AND s.status = 'active') sm
    WHERE a."ownerId" = $1
      AND ${ON_TIMELINE}
      AND (a."stackId" IS NULL

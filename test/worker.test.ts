@@ -29,6 +29,8 @@ function fakeImmich(assets: Record<string, string>, units: Record<string, string
   const albums: Record<string, string[]> = {};
   // Originals whose bytes the family account already has: not uploaded.
   const inFamily = new Set<string>();
+  // A picked id's files and uploads when not 1 per original (a live photo's video).
+  const copies: Record<string, { files: number; uploaded: number }> = {};
   const immich: JobDeps['immich'] = {
     async albumsOf(ids) {
       return [...new Set(ids.flatMap((id) => albums[id] ?? []))].sort();
@@ -74,7 +76,7 @@ function fakeImmich(assets: Record<string, string>, units: Record<string, string
       const originals = units[id] ?? [id];
       const uploaded = originals.filter((o) => !inFamily.has(o));
       for (const o of uploaded) inFamily.add(o); // a repeat finds them
-      return { familyAssetId: `fam-${id}`, originals, files: originals.length, uploaded: uploaded.length };
+      return { familyAssetId: `fam-${id}`, originals, files: originals.length, uploaded: uploaded.length, ...copies[id] };
     },
     async archive(ids) {
       calls.push(`archive:${ids.join(',')}`);
@@ -90,7 +92,7 @@ function fakeImmich(assets: Record<string, string>, units: Record<string, string
       });
     },
   };
-  return { immich, calls, failNext, assets, links, plans, family, noThumbs, albums, inFamily };
+  return { immich, calls, failNext, assets, links, plans, family, noThumbs, albums, inFamily, copies };
 }
 
 function setup(assets: Record<string, string>, units: Record<string, string[]> = {}) {
@@ -219,6 +221,19 @@ test('stack: the history states its files, and how many were copied where the 1s
   v.queue.retryLater(l.id, 'boom', new Date(Date.now() - 1));
   await runMove(v.deps, v.queue.claimNext()!);
   assert.deepEqual(copiedEvent(v.queue, l.id), ['unknown', '3 files']);
+});
+
+test('live photo: 2 files for 1 original; its video uploaded while the still was there → copied, 1 of 2', async () => {
+  const s = setup({ live: 'timeline', other: 'timeline' });
+  s.copies.live = { files: 2, uploaded: 1 };
+  const m = claim(s.queue, 'live');
+  await runMove(s.deps, m);
+  assert.deepEqual(copiedEvent(s.queue, m.id), [null, '1 of 2 files copied, 1 already there']);
+
+  s.copies.other = { files: 2, uploaded: 2 };
+  const n = claim(s.queue, 'other');
+  await runMove(s.deps, n);
+  assert.deepEqual(copiedEvent(s.queue, n.id), [null, '2 files copied']);
 });
 
 test('stack: every original archived; the list survives a resume', async () => {
