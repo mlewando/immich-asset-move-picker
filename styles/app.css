@@ -56,9 +56,10 @@
 
 /* The ring of a button filled by a photo: focused, or (aria-current) the one shown in the side
    panel. Drawn above the photo, because a ring on the button itself is painted under it, and
-   inside the button, because a day and the side panel clip what is drawn outside. 2 tones, so it
-   shows on a light photo and on a dark one. 3 looks, so the focus is never mistaken for the
-   current one: focused is thin, current is thick, both at once is thick with a white line (and a dark one, for a light photo).
+   inside the button, because a day and the side panel clip what is drawn outside. A soft blue
+   glow from the edge rather than a hard frame, so it doesn't shout over the photos. 3 strengths,
+   so the focus is not mistaken for the current one: focused is the softest, current a little
+   harder, both at once the hardest.
    The button must be positioned. The ring also lies above what the tile puts over the photo
    (the hover shade, the badges), and lets clicks through to it. */
 .photo-ring {
@@ -71,14 +72,14 @@
   inset: 0;
   z-index: 1;
   pointer-events: none;
-  box-shadow: inset 0 0 0 2px var(--color-sky-400), inset 0 0 0 3px var(--color-neutral-950);
+  --glow: color-mix(in oklab, var(--color-sky-400) 65%, transparent);
+  box-shadow: inset 0 0 0 1px var(--glow), inset 0 0 14px 2px var(--glow);
 }
 .photo-ring[aria-current='true']::after {
-  box-shadow: inset 0 0 0 4px var(--color-sky-400), inset 0 0 0 5px var(--color-neutral-950);
+  box-shadow: inset 0 0 0 2px var(--color-sky-400), inset 0 0 14px 2px var(--glow);
 }
 .photo-ring[aria-current='true']:focus-visible::after {
-  box-shadow: inset 0 0 0 4px var(--color-sky-400), inset 0 0 0 6px var(--color-white),
-    inset 0 0 0 7px var(--color-neutral-950);
+  box-shadow: inset 0 0 0 3px var(--color-sky-400), inset 0 0 18px 4px var(--color-sky-400);
 }
 
 /* Long timelines: let the browser skip layout and paint of off-screen days. */
