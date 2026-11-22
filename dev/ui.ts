@@ -1,5 +1,6 @@
 // The real page against made-up data: no Docker, no Immich, no Postgres. For trying the UI only.
-//   - Immich: test/fakes.ts' fakeImmich with 2 members, a family timeline, albums and SVG "photos".
+//   - Immich: test/fakes.ts' fakeImmich with 3 members (1 without photos), a family timeline, albums
+//     and SVG "photos".
 //   - Queue: in memory, seeded per scenario (/dev lists them; /dev/scenario/<name> switches).
 //   - Worker: a stand-in that walks queued jobs through their steps every 1.5 s; some fail on
 //     their 1st try (automatic retry after 20 s), some are refused (wait for Retry).
@@ -7,7 +8,7 @@
 // Never listen on anything but loopback.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { GridItem, GuardResult, Member } from '../src/immich/index.ts';
+import type { GridItem, GuardResult } from '../src/immich/index.ts';
 import { openQueue, type Job, type Queue, type Step } from '../src/queue.ts';
 import { buildApp, type ServerImmich } from '../src/server.ts';
 import { FAMILY_ID } from '../test/fakes.ts';
@@ -65,7 +66,9 @@ const run = (from: string, count: number) =>
 
 const ANNA = uuid(0xa001);
 const BOB = uuid(0xb001);
-const members: Member[] = [
+// The admin sorts first and has no photos, as in a real installation.
+const members = [
+  { id: uuid(0xad01), name: 'Admin', email: 'admin@example.test' },
   { id: ANNA, name: 'Anna', email: 'anna@example.test' },
   { id: BOB, name: 'Bob', email: 'bob@example.test' },
 ];
@@ -316,7 +319,7 @@ let world = SCENARIOS[scenario]!.build();
 
 // The app is built once; its Immich and queue follow the current scenario.
 const immich: ServerImmich = {
-  members: async () => members,
+  members: async () => members.map((m) => ({ ...m, hasPhotos: (world.timelines[m.id] ?? []).length > 0 })),
   memberTimeline: async (id, f = {}) =>
     (world.timelines[id] ?? []).filter(
       (i) => (!f.albumId || albumPhotos.get(f.albumId)?.ids.has(i.id)) && (!f.from || i.day >= f.from) && (!f.to || i.day <= f.to),

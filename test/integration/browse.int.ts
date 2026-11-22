@@ -44,6 +44,7 @@ const byName = (items: GridItem[]) => new Map(items.map((i) => [i.fileName, i]))
 test('members: everyone but the family account', async () => {
   const members = await get<Member[]>('/api/members');
   assert.deepEqual(members.map((m) => m.email), ['admin@example.test', 'anna@example.test', 'bob@example.test']);
+  assert.deepEqual(members.map((m) => m.hasPhotos), [false, true, true], 'the admin has an empty timeline');
   const fam = await familyId();
   assert.ok(!members.some((m) => m.id === fam));
 });

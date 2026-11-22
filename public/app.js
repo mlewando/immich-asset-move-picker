@@ -11,6 +11,7 @@ import { keepAlive } from './expiry.js';
 import { JobsIndicator, StorageTemplateReminder, useJobs } from './jobs.js';
 import { QueuePage } from './queue.js';
 import { addRange, toggleDay, toggleOne } from './selection.js';
+import { startMember } from './start.js';
 import { Viewer } from './viewer.js';
 
 const html = htm.bind(h);
@@ -356,6 +357,8 @@ function useToast() {
   return [toast, setToast];
 }
 
+const LAST_MEMBER_KEY = 'picker.lastMember';
+
 function App() {
   const route = useRoute();
   const [status, setStatus] = useState(null);
@@ -372,10 +375,29 @@ function App() {
     return () => clearInterval(t);
   }, []);
 
-  // No grid chosen yet (/) → first member, without leaving "/" in the history.
+  // No grid chosen yet (/) → the member last viewed in this browser, else the 1st with photos,
+  // without leaving "/" in the history.
   useEffect(() => {
-    if (route.kind === 'none' && members.length) navigate(`/members/${members[0].id}`, { replace: true });
+    if (route.kind !== 'none') return;
+    let lastViewed = null;
+    try {
+      lastViewed = localStorage.getItem(LAST_MEMBER_KEY);
+    } catch {
+      /* private mode: nothing remembered */
+    }
+    const start = startMember(members, lastViewed);
+    if (start) navigate(`/members/${start}`, { replace: true });
   }, [route.kind, members]);
+
+  // Remember the member whose timeline is shown (never an id that is no member).
+  useEffect(() => {
+    if (route.kind !== 'member' || !members.some((m) => m.id === route.id)) return;
+    try {
+      localStorage.setItem(LAST_MEMBER_KEY, route.id);
+    } catch {
+      /* private mode: just don't remember */
+    }
+  }, [route.kind, route.id, members]);
 
   // The member's albums, for the filter.
   const [albums, setAlbums] = useState([]);

@@ -18,6 +18,9 @@ Storage Template Migration meanwhile) is tried again after 1, 5 and 15 min befor
 for **Retry**. The **Queue** page shows every job with its photo, state and history: each step,
 wait, failure and retry.
 
+The picker opens on the member last viewed in the browser; the 1st time, on the 1st member with
+photos on the timeline.
+
 > Works only with **Immich v3.4.1**.
 > It writes to Immich's database and library directly, so on any other version (or schema) it
 > stays read-only until it has been tested and updated. Each release's notes repeat its range.
