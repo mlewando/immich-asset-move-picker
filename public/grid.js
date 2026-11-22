@@ -222,8 +222,9 @@ function useRovingFocus(wrapRef, groups, items, isSelectable, onSelect, onOpen) 
     const where = new Map();
     const navDays = groups.map(({ day, entries }, d) => {
       const head = entries.some((e) => isSelectable(e.item));
-      if (head) where.set(dayKey(day), { day: d, at: 'head' });
-      entries.forEach((e, at) => where.set(e.item.id, { day: d, at }));
+      // index: the flat index of the photo, or of the day's 1st photo for its day button.
+      if (head) where.set(dayKey(day), { day: d, at: 'head', index: entries[0].index });
+      entries.forEach((e, at) => where.set(e.item.id, { day: d, at, index: e.index }));
       return { count: entries.length, head };
     });
     return { navDays, where };
@@ -251,20 +252,23 @@ function useRovingFocus(wrapRef, groups, items, isSelectable, onSelect, onOpen) 
 
   // The Tab stop moved off a photo or day button that went: the focus follows if it was in the grid.
   useEffect(() => {
-    if (stop === current || !stop) return;
+    if (stop === current || !stop || !focusInside.current) return;
     const active = document.activeElement;
-    const wasInside = focusInside.current && (active === document.body || wrapRef.current?.contains(active));
+    const wasInside = active === document.body || wrapRef.current?.contains(active);
     if (current && wasInside) elementOf(stop)?.focus({ preventScroll: true });
   });
 
+  // The grid button an event is about (the magnifier counts as its photo's button).
+  const navOf = (target) => target.closest('[data-nav]') ?? target.closest('.tile')?.querySelector('[data-nav]');
+
   const onFocusIn = (e) => {
     focusInside.current = true;
-    const el = e.target.closest('[data-nav]') ?? e.target.closest('.tile')?.querySelector('[data-nav]');
+    const el = navOf(e.target);
     if (!el) return;
     const key = el.dataset.nav;
     setCurrent(key);
     const pos = where.get(key);
-    if (pos) lastIndex.current = groups[pos.day].entries[pos.at === 'head' ? 0 : pos.at].index;
+    if (pos) lastIndex.current = pos.index;
   };
   const onFocusOut = (e) => {
     if (!wrapRef.current?.contains(e.relatedTarget)) focusInside.current = false;
@@ -272,7 +276,7 @@ function useRovingFocus(wrapRef, groups, items, isSelectable, onSelect, onOpen) 
 
   const onKeyDown = (e) => {
     const target = e.target.closest('[data-nav]');
-    const navEl = target ?? e.target.closest('.tile')?.querySelector('[data-nav]');
+    const navEl = navOf(e.target);
     if (!navEl) return;
     const pos = where.get(navEl.dataset.nav);
     if (!pos) return;

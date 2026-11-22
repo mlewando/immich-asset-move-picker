@@ -363,16 +363,22 @@ function useToast() {
 }
 
 const LAST_MEMBER_KEY = 'picker.lastMember';
-const MAX_PER_REQUEST = 10_000; // the server takes at most this many photos per Move / Give back
+const MAX_PER_REQUEST = 10_000; // the server's maxItems for a Move / Give back (src/server.ts)
+const TOO_MANY = `Up to ${MAX_PER_REQUEST} photos at a time`;
 const APP_NAME = 'Family picker';
+
+/** Focuses a photo's (or day's) grid button and scrolls it into view. */
+function focusNav(el) {
+  el.focus({ preventScroll: true });
+  // The tile, not its button: the tile's scroll margin keeps it clear of the sticky top bar.
+  (el.closest('.tile') ?? el).scrollIntoView({ block: 'nearest' });
+}
 
 /** The grid's Tab stop (its current photo or day button), else the page's content. */
 function focusPhotos() {
-  const el = document.querySelector('[data-photos] [data-nav][tabindex="0"]') ?? document.getElementById('main');
-  if (!el) return;
-  el.focus({ preventScroll: true });
-  // The tile's scroll margin keeps it clear of the sticky top bar.
-  if (el.dataset.nav) (el.closest('.tile') ?? el).scrollIntoView({ block: 'nearest' });
+  const el = document.querySelector('[data-photos] [data-nav][tabindex="0"]');
+  if (el) focusNav(el);
+  else document.getElementById('main')?.focus({ preventScroll: true });
 }
 
 // Whether the focus is about to be lost: it is on the top bar, whose buttons change with the
@@ -456,8 +462,11 @@ function App() {
     refocus.current = false;
     focusPhotos();
   });
-  const clearSelection = useCallback((byKeyboard) => {
+  const refocusIf = (byKeyboard) => {
     if (byKeyboard && focusOnTopBar()) refocus.current = true;
+  };
+  const clearSelection = useCallback((byKeyboard) => {
+    refocusIf(byKeyboard);
     anchor.current = null;
     setSelected(new Set());
   }, []);
@@ -465,10 +474,11 @@ function App() {
   const readOnly = status?.readOnly ?? true;
   const tooMany = selected.size > MAX_PER_REQUEST;
   const runSelected = useCallback(async (e) => {
-    if (selected.size > MAX_PER_REQUEST) {
-      setToast({ kind: 'warn', text: `Up to ${MAX_PER_REQUEST} photos at a time` });
+    if (tooMany) {
+      setToast({ kind: 'warn', text: TOO_MANY });
       return;
     }
+    // A click made with the keyboard has detail 0.
     const byKeyboard = e?.detail === 0;
     const ids = [...selected];
     // Give back deletes family copies (each has an original that goes back first): ask once.
@@ -477,7 +487,7 @@ function App() {
     try {
       const r = route.kind === 'family' ? await api.giveBack(ids) : await api.move(route.id, ids);
       // Queued now or already: either way each has an unfinished job, so it leaves the grid.
-      if (byKeyboard && focusOnTopBar()) refocus.current = true;
+      refocusIf(byKeyboard);
       drop(ids);
       // What can't be moved shows up as failed in the jobs indicator (the worker decides).
       // The files of what this click queued, when more than its photos (live photos, stacks).
@@ -489,7 +499,7 @@ function App() {
     } catch (e) {
       setToast({ kind: 'error', text: e.message });
     }
-  }, [selected, items, route.kind, route.id, refreshJobs, drop]);
+  }, [selected, items, tooMany, route.kind, route.id, refreshJobs, drop]);
   const action = {
     label: route.kind === 'family' ? 'Give back' : 'Move to family',
     disabled: readOnly,
@@ -497,7 +507,7 @@ function App() {
     title: readOnly
       ? 'Read-only: the upgrade guard failed'
       : tooMany
-        ? `Up to ${MAX_PER_REQUEST} photos at a time`
+        ? TOO_MANY
         : route.kind === 'family'
           ? 'Put the originals back on the members’ timelines and delete these family copies'
           : 'Copy to the family account and archive the originals',
@@ -552,9 +562,7 @@ function App() {
     if (viewerOpen || !lastShown.current) return;
     const tile = document.querySelector(`.tile[data-id="${lastShown.current}"]`);
     if (!tile) return; // gone meanwhile (a job moved it)
-    tile.querySelector('[data-nav]').focus({ preventScroll: true });
-    // The whole tile, not just its magnifier; its scroll margin keeps it clear of the top bar.
-    tile.scrollIntoView({ block: 'nearest' });
+    focusNav(tile.querySelector('[data-nav]'));
   }, [viewerOpen]);
 
   const member = route.kind === 'member' ? members.find((m) => m.id === route.id) : null;
@@ -585,15 +593,19 @@ function App() {
   // something is open on top (viewer, menu, a dropdown: their own Esc closes them first). The
   // latest state comes through a ref: keys pressed quickly can arrive before an effect re-subscribes.
   const keyState = useRef(null);
-  keyState.current = { items, selected, isSelectable, on: items && route.kind !== 'queue' && !viewerOpen && !drawerOpen };
+  const onTimeline = items && route.kind !== 'queue';
+  keyState.current = { items, selected, isSelectable, on: onTimeline && !viewerOpen && !drawerOpen };
   useEffect(() => {
     const onKey = (e) => {
+      const esc = e.key === 'Escape';
+      const all = (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'a';
+      if (!esc && !all) return;
       const { items, selected, isSelectable, on } = keyState.current;
       if (!on || document.querySelector('[role="dialog"]')) return;
-      if (e.key === 'Escape' && selected.size > 0) {
+      if (esc && selected.size > 0) {
         clearSelection(true);
-      } else if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'a') {
-        if (e.target.closest?.('input, textarea, select, [contenteditable]')) return; // the field's own select-all
+      } else if (all && !e.target.closest?.('input, textarea, select, [contenteditable]')) {
+        // (in a field: the field's own select-all)
         e.preventDefault();
         setSelected(selectAll(items, isSelectable));
       }
@@ -617,8 +629,7 @@ function App() {
   }, [pageKey, title]);
   const skipTo = (e) => {
     e.preventDefault();
-    if (route.kind === 'queue') document.getElementById('main').focus();
-    else focusPhotos();
+    focusPhotos(); // the queue page has no grid: its content
   };
 
   // With the queue's side panel open (lg and up), the content column makes room for it, so the
@@ -645,7 +656,7 @@ function App() {
         <div class="contents" data-behind-panel>
           <${TopBar}
             title=${title}
-            count=${items && route.kind !== 'queue' ? items.length : null}
+            count=${onTimeline ? items.length : null}
             selectedCount=${selected.size}
             selectedFiles=${selected.size ? fileCount(items ?? [], selected) : 0}
             action=${action}

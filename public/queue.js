@@ -16,18 +16,6 @@ const focusRing = 'outline-none focus-visible:ring-2 focus-visible:ring-sky-400'
 const PANEL_MS = 120; // the side panel's slide out (animate-panel-out in styles/app.css)
 const WIDE = '(min-width: 64rem)'; // Tailwind's lg: from here the panel sits beside the page
 
-function useMatches(query) {
-  const [matches, setMatches] = useState(() => matchMedia(query).matches);
-  useEffect(() => {
-    const mq = matchMedia(query);
-    const update = () => setMatches(mq.matches);
-    update();
-    mq.addEventListener('change', update);
-    return () => mq.removeEventListener('change', update);
-  }, [query]);
-  return matches;
-}
-
 // What the full-screen panel covers (marked data-behind-panel): inert while it is open, so
 // neither Tab nor a screen reader's swipe leaves the panel.
 const setBehindInert = (on) => document.querySelectorAll('[data-behind-panel]').forEach((el) => el.toggleAttribute('inert', on));
@@ -263,7 +251,14 @@ function Detail({ job, closing, memberName, readOnly, onRetry, onClose }) {
     return () => document.documentElement.classList.remove('max-lg:overflow-hidden');
   }, []);
   // Below lg the panel covers the page: a modal dialog then. Resizing across lg switches it.
-  const modal = !useMatches(WIDE) && !closing;
+  const [wide, setWide] = useState(() => matchMedia(WIDE).matches);
+  useEffect(() => {
+    const mq = matchMedia(WIDE);
+    const update = () => setWide(mq.matches);
+    mq.addEventListener('change', update);
+    return () => mq.removeEventListener('change', update);
+  }, []);
+  const modal = !wide && !closing;
   useEffect(() => {
     if (!modal) return;
     setBehindInert(true);
