@@ -456,9 +456,12 @@ function App() {
   };
   // The worker paused or went on (the jobs poll saw it): the read-only banner follows at once,
   // not at its own next poll.
+  // The 1st summary only sets where it stands: the status was just loaded on start.
   const paused = summary?.worker.paused;
+  const lastPaused = useRef(undefined);
   useEffect(() => {
-    if (paused !== undefined) loadStatus();
+    if (lastPaused.current !== undefined && paused !== undefined) loadStatus();
+    if (paused !== undefined) lastPaused.current = paused;
   }, [paused]);
 
   // "Check again", in the read-only banner and the paused dropdown: 1 check for both.

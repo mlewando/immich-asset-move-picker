@@ -112,7 +112,7 @@ export async function runMove(deps: JobDeps, job: Job): Promise<'done' | 'waitin
  */
 export async function checkThumbnails(
   deps: JobDeps,
-  { now = Date.now(), stallMs = THUMBNAIL_STALL_MS, since: notBefore = 0 } = {},
+  { now = Date.now(), stallMs = THUMBNAIL_STALL_MS, since = 0 } = {},
 ): Promise<{ done: Job[]; failed: { job: Job; error: string }[] }> {
   const out: { done: Job[]; failed: { job: Job; error: string }[] } = { done: [], failed: [] };
   const waiting = deps.queue.waiting();
@@ -129,8 +129,8 @@ export async function checkThumbnails(
   }
   const last = deps.queue.lastDoneAt('thumbnailed');
   for (const job of still) {
-    const since = Math.max(Date.parse(job.waitingSince!), last ? Date.parse(last) : 0, notBefore);
-    if (now - since > stallMs) {
+    const from = Math.max(Date.parse(job.waitingSince!), last ? Date.parse(last) : 0, since);
+    if (now - from > stallMs) {
       const error = `Immich made no thumbnails for ${Math.round(stallMs / 60_000)} min: check Immich's Generate Thumbnails job, then Retry`;
       deps.queue.fail(job.id, error);
       out.failed.push({ job, error });
