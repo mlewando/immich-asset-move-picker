@@ -107,7 +107,7 @@ function refuseUnmovable(src: SourceAsset, familyId: string): void {
 async function copyOne(deps: CopyDeps, familyId: string, src: SourceAsset): Promise<{ id: string; files: number; uploaded: number }> {
   refuseUnmovable(src, familyId);
 
-  let files = 1;
+  const files = src.livePhotoVideoId ? 2 : 1;
   let uploaded = 0;
   let videoId: string | undefined;
   if (src.livePhotoVideoId) {
@@ -115,12 +115,11 @@ async function copyOne(deps: CopyDeps, familyId: string, src: SourceAsset): Prom
     if (!video || video.deletedAt || video.status !== 'active' || video.ownerId !== src.ownerId) {
       throw new Error("the live photo's video no longer exists");
     }
-    files++;
     videoId = (await deps.familyAssetWithBytes(familyId, video.checksum))?.id;
     if (!videoId) {
       const up = await upload(deps, video);
       videoId = up.id;
-      if (up.uploaded) uploaded++;
+      uploaded += Number(up.uploaded);
     }
   }
 
@@ -132,7 +131,7 @@ async function copyOne(deps: CopyDeps, familyId: string, src: SourceAsset): Prom
   } else {
     const up = await upload(deps, src, videoId);
     id = up.id;
-    if (up.uploaded) uploaded++;
+    uploaded += Number(up.uploaded);
   }
 
   const patch = carriedMetadata(src);

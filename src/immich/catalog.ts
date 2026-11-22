@@ -58,17 +58,15 @@ const ON_TIMELINE = `a.visibility = 'timeline' AND a."deletedAt" IS NULL AND a.s
 const TIMELINE_SQL = (extraColumns: string, extraWhere = '') => `
   SELECT a.id, a.type, a."localDateTime", a."originalFileName", a.width, a.height, a.duration,
          a."livePhotoVideoId", a."isEdited", a."stackId",
-         CASE WHEN a."stackId" IS NOT NULL THEN
-           (SELECT count(*)::int FROM asset s
-             WHERE s."stackId" = a."stackId" AND s."deletedAt" IS NULL AND s.status = 'active')
-         END AS "stackSize",
-         CASE WHEN a."stackId" IS NOT NULL THEN
-           (SELECT (count(*) + count(s."livePhotoVideoId"))::int FROM asset s
-             WHERE s."stackId" = a."stackId" AND s."deletedAt" IS NULL AND s.status = 'active')
-         ELSE 1 + (a."livePhotoVideoId" IS NOT NULL)::int
+         CASE WHEN a."stackId" IS NOT NULL THEN sm.size END AS "stackSize",
+         CASE WHEN a."stackId" IS NOT NULL THEN sm.size + sm.live
+              ELSE 1 + (a."livePhotoVideoId" IS NOT NULL)::int
          END AS files
          ${extraColumns}
     FROM asset a
+         -- The stack's live members, and how many of them are live photos (1 file more each).
+         CROSS JOIN LATERAL (SELECT count(*)::int AS size, count(s."livePhotoVideoId")::int AS live FROM asset s
+                              WHERE s."stackId" = a."stackId" AND s."deletedAt" IS NULL AND s.status = 'active') sm
    WHERE a."ownerId" = $1
      AND ${ON_TIMELINE}
      AND (a."stackId" IS NULL
