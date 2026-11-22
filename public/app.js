@@ -477,7 +477,7 @@ function App() {
   useEffect(() => {
     if (viewerOpen || !lastShown.current) return;
     const tile = document.querySelector(`.tile[data-id="${lastShown.current}"]`);
-    if (!tile) return; // gone meanwhile (a job moved it) or another grid
+    if (!tile) return; // gone meanwhile (a job moved it)
     tile.querySelector('[data-open]').focus({ preventScroll: true });
     // The whole tile, not just its magnifier; its scroll margin keeps it clear of the top bar.
     tile.scrollIntoView({ block: 'nearest' });

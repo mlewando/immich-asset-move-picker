@@ -25,9 +25,14 @@ export function Viewer({ items, index, selected, isSelectable, onClose, onNav, o
   useEffect(() => setPlayLive(false), [item?.id]);
 
   // The focus goes to the viewer itself, not to a button: Space and Enter must not press one
-  // by accident.
+  // by accident. Again when the focused button is gone with the photo (Play LIVE, Select).
   const root = useRef(null);
-  useEffect(() => root.current?.focus({ preventScroll: true }), []);
+  useEffect(() => {
+    if (!root.current?.contains(document.activeElement)) root.current?.focus({ preventScroll: true });
+  }, [item?.id]);
+  // A button clicked with the mouse must not keep the focus, or the next Space would press it
+  // again instead of selecting. A click made with the keyboard has detail 0 and stays put.
+  const onClick = (e) => e.detail > 0 && root.current.focus({ preventScroll: true });
 
   // The grid behind must not scroll (or show its scrollbar) while the viewer is open.
   useEffect(() => {
@@ -63,7 +68,7 @@ export function Viewer({ items, index, selected, isSelectable, onClose, onNav, o
   }
 
   return html`
-    <div ref=${root} tabindex="-1" class="group/viewer fixed inset-0 z-50 bg-black outline-none" role="dialog" aria-modal="true" aria-label=${item.fileName}>
+    <div ref=${root} tabindex="-1" class="group/viewer fixed inset-0 z-50 bg-black outline-none" role="dialog" aria-modal="true" aria-label=${item.fileName} onClick=${onClick}>
       <div class="absolute inset-0 flex items-center justify-center p-2 pt-16">${body}</div>
 
       <div class="absolute inset-x-0 top-0 flex items-center gap-3 bg-gradient-to-b from-black/80 to-transparent px-3 py-2">
