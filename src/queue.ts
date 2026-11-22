@@ -320,7 +320,7 @@ export function openQueue(path: string): Queue {
       const json = (v?: string[]) => (v ? JSON.stringify(v) : null);
       transaction(db, () => {
         sql.advance.run(step, familyAssetId ?? null, json(originals), json(familyIds), done ? 1 : 0, id);
-        event(id, done ? 'done' : 'step', note ?? null, null, outcome ?? null);
+        event(id, done ? 'done' : 'step', note ?? null, null, outcome);
       });
     },
     fail: (id, error) =>

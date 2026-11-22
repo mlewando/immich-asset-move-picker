@@ -53,9 +53,10 @@ export async function runMove(deps: JobDeps, job: Job): Promise<'done' | 'waitin
     // earlier try uploaded just like a photo that was there all along.
     const firstTry = (deps.queue.events(job.id)?.length ?? 0) <= 1;
     const outcome = copy.uploaded > 0 ? undefined : firstTry ? 'existing' : 'unknown';
-    const already = originals.length - copy.uploaded;
     const notes: string[] = [];
-    if (firstTry && copy.uploaded > 0 && already > 0) notes.push(`${already} of ${originals.length} photos already there, not copied`);
+    if (firstTry && copy.uploaded > 0 && copy.uploaded < originals.length) {
+      notes.push(`${originals.length - copy.uploaded} of ${originals.length} photos already there, not copied`);
+    }
     // Only for the history: the family copy is not put into the member's albums.
     const albums = await deps.immich.albumsOf(originals);
     if (albums.length) notes.push(`In album${albums.length > 1 ? 's' : ''}: ${albums.join(', ')}`);
