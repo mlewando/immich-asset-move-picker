@@ -45,8 +45,11 @@ export type Album = { id: string; name: string; count: number; from: string; to:
 /** Member timeline filter: 1 album, and/or a day range (YYYY-MM-DD, inclusive, localDateTime). */
 export type TimelineFilter = { albumId?: string; from?: string; to?: string };
 
-// A timeline: the owner's uploaded assets (never external-library files), never archived,
-// trashed, locked or hidden (hidden = live-photo video halves). Of a stack only the primary.
+// On a timeline (asset a): an uploaded asset (never an external-library file), not archived,
+// trashed, locked or hidden (hidden = live-photo video halves).
+const ON_TIMELINE = `a.visibility = 'timeline' AND a."deletedAt" IS NULL AND a.status = 'active' AND a."libraryId" IS NULL`;
+
+// A timeline: the owner's assets on it. Of a stack only the primary.
 const TIMELINE_SQL = (extraColumns: string, extraWhere = '') => `
   SELECT a.id, a.type, a."localDateTime", a."originalFileName", a.width, a.height, a.duration,
          a."livePhotoVideoId", a."isEdited", a."stackId",
@@ -57,8 +60,7 @@ const TIMELINE_SQL = (extraColumns: string, extraWhere = '') => `
          ${extraColumns}
     FROM asset a
    WHERE a."ownerId" = $1
-     AND a.visibility = 'timeline' AND a."deletedAt" IS NULL AND a.status = 'active'
-     AND a."libraryId" IS NULL
+     AND ${ON_TIMELINE}
      AND (a."stackId" IS NULL
           OR EXISTS (SELECT 1 FROM stack st WHERE st.id = a."stackId" AND st."primaryAssetId" = a.id))
      ${extraWhere}
@@ -96,10 +98,7 @@ function toGridItem(r: Row): GridItem {
 export function members(db: Db, familyId: string): Promise<Member[]> {
   return db.query<Member>(
     `SELECT u.id, u.name, u.email,
-            EXISTS (SELECT 1 FROM asset a
-                     WHERE a."ownerId" = u.id
-                       AND a.visibility = 'timeline' AND a."deletedAt" IS NULL AND a.status = 'active'
-                       AND a."libraryId" IS NULL) AS "hasPhotos"
+            EXISTS (SELECT 1 FROM asset a WHERE a."ownerId" = u.id AND ${ON_TIMELINE}) AS "hasPhotos"
        FROM "user" u
       WHERE u."deletedAt" IS NULL AND u.id <> $1
       ORDER BY u.name, u.email`,
@@ -134,7 +133,7 @@ export function memberAlbums(db: Db, memberId: string): Promise<Album[]> {
        JOIN album_asset aa ON aa."albumId" = al.id
        JOIN asset a ON a.id = aa."assetId"
       WHERE al."deletedAt" IS NULL AND a."ownerId" = $1
-        AND a.visibility = 'timeline' AND a."deletedAt" IS NULL AND a.status = 'active' AND a."libraryId" IS NULL
+        AND ${ON_TIMELINE}
       GROUP BY al.id, al."albumName"
       ORDER BY max(a."localDateTime") DESC, lower(al."albumName"), al.id`,
     [memberId],
