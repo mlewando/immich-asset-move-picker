@@ -32,6 +32,7 @@ function world(...sources: SourceAsset[]) {
   const familyStacks = new Map<string, string[]>();
   const failNext: { upload?: Error; updateMetadata?: Error } = {};
   const trash: Buffer[] = []; // checksums in the family account's trash
+  const racing: Buffer[] = []; // checksums another client uploads to the family account just before ours
   const name = (id: string) => sources.find((s) => s.id === id)?.originalFileName ?? id;
   const deps: CopyDeps = {
     familyId: async () => FAMILY,
@@ -51,6 +52,11 @@ function world(...sources: SourceAsset[]) {
         if (trash.some((c) => c.equals(src.checksum))) {
           calls.push(`upload:${input.fileName}:duplicate`);
           return { id: 'fam-trashed', status: 'duplicate' as const };
+        }
+        if (racing.some((c) => c.equals(src.checksum))) {
+          family.push({ id: 'fam-raced', checksum: src.checksum, edited: false, livePhotoVideoId: null, stackId: null });
+          calls.push(`upload:${input.fileName}:duplicate`);
+          return { id: 'fam-raced', status: 'duplicate' as const };
         }
         const id = `fam-${src.id}`;
         family.push({ id, checksum: src.checksum, edited: false, livePhotoVideoId: input.livePhotoVideoId ?? null, stackId: null });
@@ -72,7 +78,7 @@ function world(...sources: SourceAsset[]) {
       },
     },
   };
-  return { deps, calls, family, stacks, familyStacks, failNext, trash, name };
+  return { deps, calls, family, stacks, familyStacks, failNext, trash, racing, name };
 }
 
 const beach: SourceAsset['exif'] = {
@@ -119,6 +125,14 @@ test("bytes only in the family account's trash → refused (Immich answers 'dupl
   w.trash.push(s.checksum);
   await assert.rejects(copyToFamily(w.deps, s.id), /family account has shared\.jpg in its trash/);
   assert.deepEqual(w.calls, ['upload:shared.jpg:duplicate']);
+});
+
+test("the bytes reach the family account just before our upload → Immich's asset, not counted as uploaded", async () => {
+  const s = source({ originalFileName: 'a.jpg' });
+  const w = world(s);
+  w.racing.push(s.checksum);
+  assert.deepEqual(await copyToFamily(w.deps, s.id), { familyAssetId: 'fam-raced', originals: [s.id], uploaded: 0 });
+  assert.deepEqual(w.calls, ['upload:a.jpg:duplicate']);
 });
 
 test('safe to repeat: a failure after the upload → the repeat reuses the copy, carries metadata once', async () => {

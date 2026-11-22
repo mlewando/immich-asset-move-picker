@@ -111,24 +111,26 @@ async function copyOne(deps: CopyDeps, familyId: string, src: SourceAsset): Prom
     if (!video || video.deletedAt || video.status !== 'active' || video.ownerId !== src.ownerId) {
       throw new Error("the live photo's video no longer exists");
     }
-    videoId = (await deps.familyAssetWithBytes(familyId, video.checksum))?.id ?? (await upload(deps, video));
+    videoId = (await deps.familyAssetWithBytes(familyId, video.checksum))?.id ?? (await upload(deps, video)).id;
   }
 
   const existing = await deps.familyAssetWithBytes(familyId, src.checksum);
   let id: string;
+  let uploaded = false;
   if (existing) {
     id = existing.id;
     if (videoId && existing.livePhotoVideoId !== videoId) await deps.api.linkLivePhoto(id, videoId);
   } else {
-    id = await upload(deps, src, videoId);
+    ({ id, uploaded } = await upload(deps, src, videoId));
   }
 
   const patch = carriedMetadata(src);
   if (Object.keys(patch).length && !(await deps.editedInImmich(id))) await deps.api.updateMetadata(id, patch);
-  return { id, uploaded: !existing };
+  return { id, uploaded };
 }
 
-async function upload(deps: CopyDeps, src: SourceAsset, livePhotoVideoId?: string): Promise<string> {
+/** uploaded: false when Immich answered that the family account got these bytes meanwhile. */
+async function upload(deps: CopyDeps, src: SourceAsset, livePhotoVideoId?: string): Promise<{ id: string; uploaded: boolean }> {
   const { id, status } = await deps.api.upload({
     file: await deps.openFile(src.originalPath),
     fileName: src.originalFileName,
@@ -142,7 +144,7 @@ async function upload(deps: CopyDeps, src: SourceAsset, livePhotoVideoId?: strin
   if (status === 'duplicate' && (await deps.familyAssetWithBytes(await deps.familyId(), src.checksum))?.id !== id) {
     throw new Error(`the family account has ${src.originalFileName} in its trash: restore it or empty the trash, then Retry`);
   }
-  return id;
+  return { id, uploaded: status === 'created' };
 }
 
 /**
