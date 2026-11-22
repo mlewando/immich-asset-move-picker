@@ -50,8 +50,10 @@ export async function runMove(deps: JobDeps, job: Job): Promise<'done' | 'waitin
     originals = copy.originals;
     // For the history: was the photo copied, or already there? Only the 1st try can tell: a
     // failure, a Retry or a restart each leave an entry, and a try after one finds what the
-    // earlier try uploaded just like a photo that was there all along.
-    const firstTry = (deps.queue.events(job.id)?.length ?? 0) <= 1;
+    // earlier try uploaded just like a photo that was there all along. (A job queued before the
+    // picker kept a history has no 'queued' entry: not known to be at its 1st try.)
+    const history = deps.queue.events(job.id) ?? [];
+    const firstTry = history.length === 1 && history[0]!.type === 'queued';
     const outcome = copy.uploaded > 0 ? undefined : firstTry ? 'existing' : 'unknown';
     const notes: string[] = [];
     if (firstTry && copy.uploaded > 0 && copy.uploaded < originals.length) {

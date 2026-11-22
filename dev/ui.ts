@@ -120,7 +120,7 @@ const albumNote = (assetId: string) => {
 // (nothing but 'queued' in the history) knows it was there before.
 const copyOutcome = (q: Queue, job: Job) => {
   if (!byId.get(job.sourceAssetId)?.inFamily) return undefined;
-  return (q.events(job.id)?.length ?? 0) <= 1 ? 'existing' : 'unknown';
+  return q.events(job.id)?.length === 1 ? 'existing' : 'unknown';
 };
 
 const bob = run('2026-10-10', 3).flatMap((day) => Array.from({ length: 4 }, () => photo('bob', day)));
