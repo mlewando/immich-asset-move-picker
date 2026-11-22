@@ -469,6 +469,21 @@ function App() {
     },
     [items, viewerIndex, gridKey],
   );
+  // The viewer closed (Esc, its button, the browser's Back): the focus goes to the magnifier of
+  // the photo last shown, so the keyboard carries on from there, not from the photo first opened.
+  const viewerOpen = viewerIndex >= 0;
+  const lastShown = useRef(null);
+  if (viewerOpen) lastShown.current = route.asset;
+  // An effect after the paint, not a layout effect: from a layout effect the scroll does not hold
+  // when the viewer closes through history.back().
+  useEffect(() => {
+    if (viewerOpen || !lastShown.current) return;
+    const tile = document.querySelector(`.tile[data-id="${lastShown.current}"]`);
+    if (!tile) return; // gone meanwhile (a job moved it)
+    tile.querySelector('[data-open]').focus({ preventScroll: true });
+    // The whole tile, not just its magnifier; its scroll margin keeps it clear of the top bar.
+    tile.scrollIntoView({ block: 'nearest' });
+  }, [viewerOpen]);
 
   const member = route.kind === 'member' ? members.find((m) => m.id === route.id) : null;
   const title = route.kind === 'family' ? 'Family account' : route.kind === 'queue' ? 'Queue' : member?.name ?? '';
@@ -497,7 +512,7 @@ function App() {
   // With the queue's side panel open (lg and up), the content column makes room for it, so the
   // top bar and its dropdowns end where the panel starts.
   return html`
-    <div class="flex min-h-dvh">
+    <div class="flex min-h-dvh" inert=${viewerOpen}>
       <${Sidebar}
         members=${members}
         route=${route}
@@ -566,7 +581,7 @@ function App() {
       }`}
       role="status"
     >${toast.text}</div>`}
-    ${viewerIndex >= 0 &&
+    ${viewerOpen &&
     html`<${Viewer}
       items=${items}
       index=${viewerIndex}

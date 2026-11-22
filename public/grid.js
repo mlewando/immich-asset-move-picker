@@ -57,7 +57,7 @@ class Tile extends Component {
     const src = large ? media.preview(item.id) : media.thumbnail(item.id);
     return html`
       <div
-        class=${`tile group relative aspect-square overflow-hidden ${selected ? 'bg-neutral-800' : 'bg-neutral-900'}`}
+        class=${`tile group relative aspect-square scroll-mt-14 overflow-hidden ${selected ? 'bg-neutral-800' : 'bg-neutral-900'}`}
         data-id=${item.id}
         data-selectable=${selectable ? '1' : '0'}
       >
@@ -88,6 +88,7 @@ class Tile extends Component {
         <div class="pointer-events-none absolute bottom-1.5 left-1.5 right-1/3 flex flex-wrap-reverse gap-1"><${StatusBadges} item=${item} /></div>
 
         <button
+          data-open
           class="group/zoom absolute bottom-0 right-0 flex h-1/3 w-1/3 cursor-zoom-in items-end justify-end p-1.5 outline-none"
           aria-label=${`Open ${item.fileName}`}
           title="Open"

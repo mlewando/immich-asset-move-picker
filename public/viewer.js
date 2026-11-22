@@ -1,6 +1,7 @@
-// Full-screen viewer: ←/→ move, Space selects, Esc (or the browser's Back) closes.
+// Full-screen viewer: ←/→ move, Space selects, Esc (or the browser's Back) closes. It takes the
+// keyboard focus when it opens; the page behind is inert meanwhile (app.js), so Tab stays inside.
 import { h } from 'preact';
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
 import { media } from './api.js';
 import { MediaBadges, StatusBadges } from './grid.js';
@@ -12,12 +13,26 @@ const html = htm.bind(h);
 const timeLabel = (iso) =>
   new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' });
 
-const roundBtn = 'grid size-10 place-items-center rounded-full text-white transition-colors hover:bg-white/15 disabled:opacity-30 disabled:hover:bg-transparent';
+const focusRing = 'outline-none focus-visible:ring-2 focus-visible:ring-sky-400';
+const roundBtn = `grid size-10 place-items-center rounded-full text-white transition-colors hover:bg-white/15 ${focusRing}`;
+// Previous/next show on hover, or when focused with the keyboard. At either end they are
+// aria-disabled, not disabled: a disabled button would drop the focus out of the viewer.
+const navBtn = `${roundBtn} absolute top-1/2 -translate-y-1/2 bg-black/30 opacity-0 group-hover/viewer:opacity-100 focus-visible:opacity-100 aria-disabled:text-white/30 aria-disabled:hover:bg-black/30`;
 
 export function Viewer({ items, index, selected, isSelectable, onClose, onNav, onToggle }) {
   const item = items[index];
   const [playLive, setPlayLive] = useState(false);
   useEffect(() => setPlayLive(false), [item?.id]);
+
+  // The focus goes to the viewer itself, not to a button: Space and Enter must not press one
+  // by accident. Also when moving to another photo removes the focused button (Play LIVE, Select).
+  const root = useRef(null);
+  useEffect(() => {
+    if (!root.current?.contains(document.activeElement)) root.current?.focus({ preventScroll: true });
+  }, [item?.id]);
+  // A button clicked with the mouse must not keep the focus, or the next Space would press it
+  // again instead of selecting. A click made with the keyboard has detail 0 and stays put.
+  const onClick = (e) => e.detail > 0 && root.current.focus({ preventScroll: true });
 
   // The grid behind must not scroll (or show its scrollbar) while the viewer is open.
   useEffect(() => {
@@ -30,7 +45,8 @@ export function Viewer({ items, index, selected, isSelectable, onClose, onNav, o
       if (e.key === 'Escape') onClose();
       else if (e.key === 'ArrowLeft') onNav(-1);
       else if (e.key === 'ArrowRight') onNav(1);
-      else if (e.key === ' ' && isSelectable(item)) {
+      // Space on a focused button presses that button, nothing more.
+      else if (e.key === ' ' && isSelectable(item) && !e.target.closest('button')) {
         e.preventDefault();
         onToggle(item.id);
       }
@@ -52,7 +68,7 @@ export function Viewer({ items, index, selected, isSelectable, onClose, onNav, o
   }
 
   return html`
-    <div class="group/viewer fixed inset-0 z-50 bg-black" role="dialog" aria-modal="true" aria-label=${item.fileName}>
+    <div ref=${root} tabindex="-1" class="group/viewer fixed inset-0 z-50 bg-black outline-none" role="dialog" aria-modal="true" aria-label=${item.fileName} onClick=${onClick}>
       <div class="absolute inset-0 flex items-center justify-center p-2 pt-16">${body}</div>
 
       <div class="absolute inset-x-0 top-0 flex items-center gap-3 bg-gradient-to-b from-black/80 to-transparent px-3 py-2">
@@ -64,7 +80,7 @@ export function Viewer({ items, index, selected, isSelectable, onClose, onNav, o
         <div class="flex gap-1"><${MediaBadges} item=${item} /><${StatusBadges} item=${item} /></div>
         ${item.livePhotoVideoId &&
         html`<button
-          class="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-sm text-white hover:bg-white/20"
+          class=${`inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-sm text-white hover:bg-white/20 ${focusRing}`}
           onClick=${() => setPlayLive(!playLive)}
         ><${Icon} name=${playLive ? 'stop' : 'play'} class="size-4" />${playLive ? 'Still' : 'Play LIVE'}</button>`}
         ${isSelectable(item) &&
@@ -78,12 +94,12 @@ export function Viewer({ items, index, selected, isSelectable, onClose, onNav, o
       </div>
 
       <button
-        class=${`${roundBtn} absolute left-3 top-1/2 -translate-y-1/2 bg-black/30 opacity-0 group-hover/viewer:opacity-100`}
-        onClick=${() => onNav(-1)} disabled=${index === 0} aria-label="Previous"
+        class=${`${navBtn} left-3`}
+        onClick=${() => onNav(-1)} aria-disabled=${index === 0} aria-label="Previous"
       ><${Icon} name="chevronLeft" class="size-7" /></button>
       <button
-        class=${`${roundBtn} absolute right-3 top-1/2 -translate-y-1/2 bg-black/30 opacity-0 group-hover/viewer:opacity-100`}
-        onClick=${() => onNav(1)} disabled=${index === items.length - 1} aria-label="Next"
+        class=${`${navBtn} right-3`}
+        onClick=${() => onNav(1)} aria-disabled=${index === items.length - 1} aria-label="Next"
       ><${Icon} name="chevronRight" class="size-7" /></button>
     </div>`;
 }
