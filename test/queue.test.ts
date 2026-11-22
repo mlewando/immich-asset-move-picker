@@ -246,6 +246,15 @@ test('events: every change of a job is in its history, kept after it is done', (
   assert.equal(q.events(999), null, 'unknown job');
 });
 
+test("events: a step's outcome is kept with it, null when none was given", () => {
+  const q = openQueue(':memory:');
+  q.enqueue('move', ['a'], { memberId: M });
+  const a = q.claimNext()!;
+  q.advance(a.id, { step: 'copied', outcome: 'existing' });
+  q.advance(a.id, { step: 'archived' });
+  assert.deepEqual(q.events(a.id)!.map((e) => [e.step, e.outcome]), [['queued', null], ['copied', 'existing'], ['archived', null]]);
+});
+
 test('list: sections, pages, and done jobs that ever failed', () => {
   const q = openQueue(':memory:');
   q.enqueue('move', ['a', 'b', 'c', 'd', 'e'], { memberId: M, requestedBy: 'curator@x' });

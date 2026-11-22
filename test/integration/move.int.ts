@@ -178,6 +178,13 @@ test('move 3 photos: queued, done, originals archived, copies in the family time
     for (const t of ['thumbnail', 'preview']) assert.ok(types.some((r) => r.type === t), `${i.fileName}: ${t}`);
   }
   assert.ok(familyBefore.has((await familyCopyOf(moved['shared.jpg']!.id))[0]!), 'shared.jpg reused the existing family copy');
+  // The history says so: only shared.jpg was not copied.
+  const { jobs } = (await json<{ jobs: { id: number; sourceAssetId: string }[] }>('/api/jobs/list?section=done')).body;
+  for (const [name, outcome] of [['photo-10.jpg', null], ['shared.jpg', 'existing']] as const) {
+    const job = jobs.find((j) => j.sourceAssetId === moved[name]!.id)!;
+    const events = (await json<{ step: string; outcome: string | null }[]>(`/api/jobs/${job.id}/events`)).body;
+    assert.equal(events.find((e) => e.step === 'copied')!.outcome, outcome, name);
+  }
 
   const familyGrid = (await json<GridItem[]>('/api/family/assets')).body;
   const newCopies = familyGrid.filter((i) => !familyBefore.has(i.id));

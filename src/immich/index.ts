@@ -58,7 +58,7 @@ export type Immich = {
   /**
    * A member's asset into the family account: a live photo with its video, a stack (picked by
    * its primary) whole and re-stacked, edited metadata included. Safe to repeat. Returns the
-   * picked asset's family copy and the originals to archive.
+   * picked asset's family copy, the originals to archive and how many of them it uploaded.
    */
   copyToFamily(assetId: string): Promise<CopyResult>;
   /** Originals off the members' timelines (after a move). Already archived = 'unchanged'. */

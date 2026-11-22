@@ -119,6 +119,12 @@ const albumNote = (assetId: string) => {
   const a = albumsOf(assetId);
   return a.length ? `In album${a.length > 1 ? 's' : ''}: ${a.join(', ')}` : undefined;
 };
+// As the real worker: a photo the family account already has is not copied, and only a 1st try
+// (nothing but 'queued' in the history) knows it was there before.
+const copyOutcome = (q: Queue, job: Job) => {
+  if (!byId.get(job.sourceAssetId)?.inFamily) return undefined;
+  return q.events(job.id)?.length === 1 ? 'existing' : 'unknown';
+};
 
 const bob = run('2026-10-10', 3).flatMap((day) => Array.from({ length: 4 }, () => photo('bob', day)));
 const family = run('2026-10-20', 3).flatMap((day, d) =>
@@ -159,6 +165,7 @@ function seeder(queue: Queue) {
         familyAssetId: step === 'copied' ? family[job.id % family.length]!.id : undefined,
         originals: step === 'copied' ? [job.sourceAssetId] : undefined,
         note: step === 'copied' ? albumNote(job.sourceAssetId) : undefined,
+        outcome: step === 'copied' ? copyOutcome(queue, job) : undefined,
         done: step === 'thumbnailed',
       });
     }
@@ -187,6 +194,16 @@ function everyState(queue: Queue) {
     moveTo(job, 4);
   }
   for (let i = 0; i < 4; i++) giveBack(claim('giveback', family[i]!.id, null), anna[i]!.id);
+  // The newest done: a photo the family account already had, moved at its 1st try and after a
+  // failure (the 2 history lines of a copy step that uploaded nothing).
+  const shared = anna.find((p) => p.inFamily)!;
+  moveTo(claim('move', shared.id, ANNA), 4);
+  {
+    const job = claim('move', shared.id, ANNA);
+    queue.retryLater(job.id, FETCH_FAILED, new Date());
+    queue.claimNext();
+    moveTo(job, 4);
+  }
 
   // Failed: a refusal, a transient failure that kept failing, a refused give back.
   queue.fail(claim('move', bob[0]!.id, BOB).id, 'not moved: the photo is in the trash');
@@ -362,6 +379,7 @@ const work = async (q: Queue, job: Job) => {
       familyAssetId: step === 'copied' ? family[0]!.id : undefined,
       originals: step === 'copied' ? [job.sourceAssetId] : undefined,
       note: step === 'copied' ? albumNote(job.sourceAssetId) : undefined,
+      outcome: step === 'copied' ? copyOutcome(q, job) : undefined,
       done: step === 'thumbnailed',
     });
     await sleep(1_500);
