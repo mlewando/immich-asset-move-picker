@@ -321,18 +321,24 @@ test('worker: paused, it checks again on its own and goes on once the guard pass
   assert.deepEqual(logged.slice(1), ['worker resumed', 'move 1 done: a']);
 });
 
-test('worker: only checks made while paused are quick', async () => {
+test('worker: only the paused worker\'s own timed checks are quick; a slow Immich resumes on a full one', async () => {
   const s = setup({});
   const quick: boolean[] = [];
-  let guard = bad;
-  const wk = createWorker({ ...s.deps, guard: async (o) => (quick.push(o.quick), guard), log: silent, recheckMs: 60_000 });
-  wk.kick();
+  // Down at the 1st check; then up, but answering slower than a quick check waits.
+  const guard = async (o: { quick: boolean }) => {
+    quick.push(o.quick);
+    return quick.length === 1 || o.quick ? bad : ok;
+  };
+  const wk = createWorker({ ...s.deps, guard, log: silent, recheckMs: 20 });
+  wk.kick(); // 1st check (full) finds Immich down: paused
   await wk.idle();
-  await wk.recheck();
-  guard = ok;
-  await wk.recheck();
+  for (let i = 0; i < 50 && quick.length < 3; i++) await sleep(10);
+  assert.deepEqual(quick.slice(0, 3), [false, true, true], 'timed checks while paused are quick');
+  assert.equal(wk.state().paused, true, 'quick checks miss a slow Immich');
+  const state = await wk.recheck(); // Check again: full
+  assert.equal(state.paused, false);
+  assert.equal(quick.at(-1), false);
   await wk.idle();
-  assert.deepEqual(quick, [false, true, true, false], 'the 1st check before pausing, the drain after resuming: not quick');
 });
 
 test('worker: the next check while paused counts from the start of the last one', async () => {
@@ -342,15 +348,15 @@ test('worker: the next check while paused counts from the start of the last one'
   const starts: number[] = [];
   const slowGuard = async () => {
     starts.push(Date.now());
-    await sleep(60); // a check that times out
+    await sleep(200); // a check that times out
     return guard;
   };
   const wk = createWorker({ ...s.deps, guard: slowGuard, log: silent, recheckMs: 100 });
   wk.kick();
-  for (let i = 0; i < 60 && starts.length < 2; i++) await sleep(10);
+  for (let i = 0; i < 100 && starts.length < 2; i++) await sleep(10);
   guard = ok;
-  assert.ok(starts[1]! - starts[0]! < 140, `2nd check ${starts[1]! - starts[0]!} ms after the 1st began (not 160)`);
-  for (let i = 0; i < 60 && s.queue.counts().done === 0; i++) await sleep(10);
+  assert.ok(starts[1]! - starts[0]! < 250, `2nd check ${starts[1]! - starts[0]!} ms after the 1st began (not 300)`);
+  for (let i = 0; i < 100 && s.queue.counts().done === 0; i++) await sleep(10);
   await wk.idle();
 });
 

@@ -458,10 +458,11 @@ function App() {
   // not at its own next poll.
   // The 1st summary only sets where it stands: the status was just loaded on start.
   const paused = summary?.worker.paused;
-  const lastPaused = useRef(undefined);
+  const seenSummary = useRef(false);
   useEffect(() => {
-    if (lastPaused.current !== undefined && paused !== undefined) loadStatus();
-    if (paused !== undefined) lastPaused.current = paused;
+    if (paused === undefined) return;
+    if (seenSummary.current) loadStatus();
+    seenSummary.current = true;
   }, [paused]);
 
   // "Check again", in the read-only banner and the paused dropdown: 1 check for both.

@@ -186,7 +186,8 @@ export type Worker = {
 
 export function createWorker(
   deps: JobDeps & {
-    // quick: the worker is paused, so it only wants to know whether it can go on (see Immich.check).
+    // quick: the paused worker's own timed check, which only wants to know whether it can go on
+    // (see Immich.check).
     guard: (opts: { quick: boolean }) => Promise<GuardResult>;
     log: { info(msg: string): void; error(msg: string): void };
     onChange?: () => void;
@@ -212,6 +213,9 @@ export function createWorker(
   let lastCheck = 0;
   // When the latest guard run started: a paused worker checks again recheckMs after that.
   let guardStartedAt = 0;
+  // The next check is the paused worker's own timed one: quick. Any other (Check again, the
+  // periodic kick) gives a slow Immich its full time, so a busy one doesn't keep it paused.
+  let timedCheck = false;
   // Since when the worker has been watching Immich: its own start, or the end of the last pause.
   let resumedAt = Date.now();
 
@@ -223,7 +227,9 @@ export function createWorker(
   const runGuard = (): Promise<GuardResult> => {
     const run = guardChain.then(() => {
       guardStartedAt = Date.now();
-      return deps.guard({ quick: paused });
+      const quick = paused && timedCheck;
+      timedCheck = false;
+      return deps.guard({ quick });
     });
     guardChain = run.catch(() => {});
     return run;
@@ -312,7 +318,11 @@ export function createWorker(
     clearTimeout(wakeTimer);
     if (paused || stopped) {
       // Counted from the start of the last check, so a slow failing one doesn't add its own time.
-      wakeTimer = setTimeout(kick, Math.max(0, recheckMs - (Date.now() - guardStartedAt))).unref();
+      const timed = () => {
+        timedCheck = true;
+        kick();
+      };
+      wakeTimer = setTimeout(timed, Math.max(0, recheckMs - (Date.now() - guardStartedAt))).unref();
       return;
     }
     const delays: number[] = [];
