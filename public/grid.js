@@ -57,12 +57,12 @@ class Tile extends Component {
     const src = large ? media.preview(item.id) : media.thumbnail(item.id);
     return html`
       <div
-        class=${`tile group relative aspect-square scroll-mt-14 overflow-hidden${selected ? 'bg-neutral-800' : 'bg-neutral-900'}`}
+        class=${`tile group relative aspect-square scroll-mt-14 overflow-hidden ${selected ? 'bg-neutral-800' : 'bg-neutral-900'}`}
         data-id=${item.id}
         data-selectable=${selectable ? '1' : '0'}
       >
         <button
-          class=${`absolute inset-0 block size-full outline-none focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-inset ${selectable ? 'cursor-pointer' : 'cursor-zoom-in'}`}
+          class=${`photo-ring absolute inset-0 block size-full ${selectable ? 'cursor-pointer' : 'cursor-zoom-in'}`}
           aria-pressed=${selectable ? selected : undefined}
           aria-label=${selectable ? `${selected ? 'Unselect' : 'Select'} ${item.fileName}` : `Open ${item.fileName}`}
           title=${item.fileName}
