@@ -1,10 +1,13 @@
-// Timeline grid: days, tiles, badges, drag-select.
+// Timeline grid: days, tiles, badges, drag-select, keyboard.
 // Click a tile = select it (shift-click = range); the magnifier corner (bottom-right third)
 // opens the viewer. The magnifier shows on hover, or always on a touch screen (no hover there). A tile that can't be selected (family "no origin") opens on click instead.
+// Keyboard: the whole grid is 1 Tab stop (roving tabindex over the photos and day buttons);
+// arrows move, Space selects (Shift+Space: range), Enter opens.
 import { Component, h } from 'preact';
-import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
 import { media } from './api.js';
+import { moveFocus } from './gridnav.js';
 import { CheckCircle, Icon } from './icons.js';
 import { applyMarquee, groupByDay, rectsIntersect } from './selection.js';
 import { Thumb } from './thumb.js';
@@ -49,11 +52,11 @@ class Tile extends Component {
     const p = this.props;
     return (
       next.item !== p.item || next.selected !== p.selected || next.selectable !== p.selectable ||
-      next.index !== p.index || next.large !== p.large
+      next.index !== p.index || next.large !== p.large || next.tabStop !== p.tabStop
     );
   }
 
-  render({ item, index, selected, selectable, large, onSelect, onOpen }) {
+  render({ item, index, selected, selectable, large, tabStop, onSelect, onOpen }) {
     const src = large ? media.preview(item.id) : media.thumbnail(item.id);
     return html`
       <div
@@ -62,6 +65,8 @@ class Tile extends Component {
         data-selectable=${selectable ? '1' : '0'}
       >
         <button
+          data-nav=${item.id}
+          tabindex=${tabStop ? 0 : -1}
           class=${`photo-ring absolute inset-0 block size-full ${selectable ? 'cursor-pointer' : 'cursor-zoom-in'}`}
           aria-pressed=${selectable ? selected : undefined}
           aria-label=${selectable ? `${selected ? 'Unselect' : 'Select'} ${item.fileName}` : `Open ${item.fileName}`}
@@ -89,6 +94,7 @@ class Tile extends Component {
 
         <button
           data-open
+          tabindex="-1"
           class="group/zoom absolute bottom-0 right-0 flex h-1/3 w-1/3 cursor-zoom-in items-end justify-end p-1.5 outline-none"
           aria-label=${`Open ${item.fileName}`}
           title="Open"
@@ -197,11 +203,113 @@ function useMarquee(wrapRef, selected, setSelected) {
   return { box, onPointerDown, onClickCapture };
 }
 
+const NAV_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']);
+const dayKey = (day) => `day:${day}`;
+
+/**
+ * The grid's 1 Tab stop (roving tabindex): a photo id or dayKey(day). It follows the focus (a
+ * click moves it too). When its photo or day button goes (a job moved it, a reload), the photo
+ * at the same flat position takes over, else the last one; and the focus with it, if the focus
+ * was in the grid.
+ */
+function useRovingFocus(wrapRef, groups, items, isSelectable, onSelect, onOpen) {
+  const [current, setCurrent] = useState(null);
+  const lastIndex = useRef(0); // flat index of the photo the Tab stop was last on
+  const focusInside = useRef(false);
+
+  // Each day as moveFocus sees it, and where every photo / day button sits.
+  const { navDays, where } = useMemo(() => {
+    const where = new Map();
+    const navDays = groups.map(({ day, entries }, d) => {
+      const head = entries.some((e) => isSelectable(e.item));
+      if (head) where.set(dayKey(day), { day: d, at: 'head' });
+      entries.forEach((e, at) => where.set(e.item.id, { day: d, at }));
+      return { count: entries.length, head };
+    });
+    return { navDays, where };
+  }, [groups, isSelectable]);
+  const keyOf = (pos) => (pos.at === 'head' ? dayKey(groups[pos.day].day) : groups[pos.day].entries[pos.at].item.id);
+
+  let stop = null;
+  if (items.length) {
+    if (current && where.has(current)) stop = current;
+    else if (current?.startsWith('day:')) {
+      // Its day button went (nothing selectable left): the day's 1st photo, if the day is still there.
+      stop = groups.find((g) => dayKey(g.day) === current)?.entries[0].item.id ?? null;
+    }
+    stop ??= items[Math.min(lastIndex.current, items.length - 1)].id;
+  }
+
+  const elementOf = (key) => wrapRef.current?.querySelector(`[data-nav="${CSS.escape(key)}"]`);
+  const focusKey = (key) => {
+    const el = elementOf(key);
+    if (!el) return;
+    el.focus({ preventScroll: true });
+    // The tile, not its button: the tile's scroll margin keeps it clear of the sticky top bar.
+    (el.closest('.tile') ?? el).scrollIntoView({ block: 'nearest' });
+  };
+
+  // The Tab stop moved off a photo or day button that went: the focus follows if it was in the grid.
+  useEffect(() => {
+    if (stop === current || !stop) return;
+    const active = document.activeElement;
+    const wasInside = focusInside.current && (active === document.body || wrapRef.current?.contains(active));
+    if (current && wasInside) elementOf(stop)?.focus({ preventScroll: true });
+  });
+
+  const onFocusIn = (e) => {
+    focusInside.current = true;
+    const el = e.target.closest('[data-nav]') ?? e.target.closest('.tile')?.querySelector('[data-nav]');
+    if (!el) return;
+    const key = el.dataset.nav;
+    setCurrent(key);
+    const pos = where.get(key);
+    if (pos) lastIndex.current = groups[pos.day].entries[pos.at === 'head' ? 0 : pos.at].index;
+  };
+  const onFocusOut = (e) => {
+    if (!wrapRef.current?.contains(e.relatedTarget)) focusInside.current = false;
+  };
+
+  const onKeyDown = (e) => {
+    const target = e.target.closest('[data-nav]');
+    const navEl = target ?? e.target.closest('.tile')?.querySelector('[data-nav]');
+    if (!navEl) return;
+    const pos = where.get(navEl.dataset.nav);
+    if (!pos) return;
+    if (NAV_KEYS.has(e.key)) {
+      if (e.altKey || e.ctrlKey || e.metaKey) return; // e.g. Alt+← is the browser's Back
+      e.preventDefault();
+      const tracks = getComputedStyle(navEl.closest('.day').querySelector('.day-grid')).gridTemplateColumns;
+      const cols = Math.max(1, tracks.split(' ').length);
+      focusKey(keyOf(moveFocus(navDays, cols, pos, e.key)));
+      return;
+    }
+    // Space and Enter on a photo are handled here, not by the button's own click, so Shift is
+    // read from the key itself (a Space-made click doesn't carry it in every browser).
+    if (!target || pos.at === 'head') return;
+    const { item, index } = groups[pos.day].entries[pos.at];
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      onOpen(item.id);
+    } else if (e.key === ' ') {
+      e.preventDefault();
+      if (isSelectable(item)) onSelect(index, e.shiftKey);
+    }
+  };
+  // The button would still click on Space's release.
+  const onKeyUp = (e) => {
+    if (e.key === ' ' && e.target.closest('.tile [data-nav]')) e.preventDefault();
+  };
+
+  return { stop, onFocusIn, onFocusOut, onKeyDown, onKeyUp };
+}
+
 /** empty: what to say when there are no items (title, hint). */
 export function Grid({ items, selected, setSelected, isSelectable, tileSize, onSelect, onDay, onOpen, empty }) {
   const groups = useMemo(() => groupByDay(items), [items]);
   const wrapRef = useRef(null);
   const { box, onPointerDown, onClickCapture } = useMarquee(wrapRef, selected, setSelected);
+  const nav = useRovingFocus(wrapRef, groups, items, isSelectable, onSelect, onOpen);
   if (items.length === 0) {
     return html`<div class="flex flex-col items-center gap-2 py-20 text-center">
       <span class="grid size-14 place-items-center rounded-full bg-white/5 text-neutral-500"><${Icon} name="album" class="size-7" /></span>
@@ -214,20 +322,32 @@ export function Grid({ items, selected, setSelected, isSelectable, tileSize, onS
   return html`
     <div
       ref=${wrapRef}
+      data-photos
+      role="group"
+      aria-label="Photos"
+      aria-describedby="photos-keys"
       class=${`select-none ${selected.size ? 'selecting' : ''}`}
       style=${{ '--tile': `${tileSize}px` }}
       onPointerDown=${onPointerDown}
       onClickCapture=${onClickCapture}
+      onFocusIn=${nav.onFocusIn}
+      onFocusOut=${nav.onFocusOut}
+      onKeyDown=${nav.onKeyDown}
+      onKeyUp=${nav.onKeyUp}
     >
+      <p id="photos-keys" class="sr-only">Arrow keys move, Space selects, Enter opens.</p>
       ${groups.map(({ day, entries }) => {
         const dayItems = entries.map((e) => e.item).filter(isSelectable);
         const allIn = dayItems.length > 0 && dayItems.every((i) => selected.has(i.id));
+        const count = html`<span class="text-xs font-normal text-neutral-500">${entries.length}<span class="sr-only">${entries.length === 1 ? ' item' : ' items'}</span></span>`;
         return html`
           <section class="day group/day" key=${day}>
             <h2 class="pb-2 pt-5 text-sm font-medium text-neutral-300">
               ${dayItems.length > 0
                 ? html`<button
-                    class="day-tick group/label -mx-1.5 inline-flex cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1 outline-none transition-colors hover:bg-white/5 hover:text-white focus-visible:ring-2 focus-visible:ring-sky-400"
+                    data-nav=${dayKey(day)}
+                    tabindex=${nav.stop === dayKey(day) ? 0 : -1}
+                    class="day-tick group/label -mx-1.5 inline-flex scroll-mt-14 cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1 outline-none transition-colors hover:bg-white/5 hover:text-white focus-visible:ring-2 focus-visible:ring-sky-400"
                     aria-pressed=${allIn}
                     title=${allIn ? 'Unselect this day' : 'Select this day'}
                     onClick=${() => onDay(entries.map((e) => e.item))}
@@ -236,15 +356,15 @@ export function Grid({ items, selected, setSelected, isSelectable, tileSize, onS
                       <${CheckCircle} on=${allIn} class="size-5" />
                     </span>
                     <span>${dayLabel(day)}</span>
-                    <span class="text-xs font-normal text-neutral-500">${entries.length}</span>
+                    ${count}
                   </button>`
                 : html`<span class="inline-flex items-center gap-2 px-1.5 py-1">
                     <span class="size-5" />
                     <span>${dayLabel(day)}</span>
-                    <span class="text-xs font-normal text-neutral-500">${entries.length}</span>
+                    ${count}
                   </span>`}
             </h2>
-            <div class="grid grid-cols-[repeat(auto-fill,minmax(min(var(--tile),30vw),1fr))] gap-1">
+            <div class="day-grid grid grid-cols-[repeat(auto-fill,minmax(min(var(--tile),30vw),1fr))] gap-1">
               ${entries.map(
                 ({ item, index }) => html`<${Tile}
                   key=${item.id}
@@ -253,6 +373,7 @@ export function Grid({ items, selected, setSelected, isSelectable, tileSize, onS
                   selected=${selected.has(item.id)}
                   selectable=${isSelectable(item)}
                   large=${large}
+                  tabStop=${nav.stop === item.id}
                   onSelect=${onSelect}
                   onOpen=${onOpen}
                 />`,
