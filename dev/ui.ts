@@ -340,7 +340,7 @@ const SCENARIOS: Record<string, { about: string; open: string; build: () => Worl
       timelines: allPhotos(),
       albums: true,
       queue: openQueue(':memory:'),
-      guard: { ok: false, problems: ['Immich 3.5.0 is not a supported version (3.4.1)'], checkedAt: new Date() },
+      guard: { ok: false, problems: ['Immich 3.5.0 is not a supported version (3.4.1, 3.4.2)'], checkedAt: new Date() },
     }),
   },
 };

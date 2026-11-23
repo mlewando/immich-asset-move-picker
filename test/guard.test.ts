@@ -4,7 +4,7 @@ import { ImmichError } from '../src/immich/api.ts';
 import { checkGuard, VERSION_RECHECK_MS } from '../src/immich/guard.ts';
 import { fakeApi, fakeDb, healthySchema } from './fakes.ts';
 
-for (const [major, minor, patch] of [[3, 4, 1]]) {
+for (const [major, minor, patch] of [[3, 4, 1], [3, 4, 2]]) {
   test(`supported version ${major}.${minor}.${patch} + expected schema → ok`, async () => {
     const r = await checkGuard({ api: fakeApi({ major: major!, minor: minor!, patch: patch! }), db: fakeDb() });
     assert.deepEqual(r.problems, []);
@@ -12,13 +12,13 @@ for (const [major, minor, patch] of [[3, 4, 1]]) {
   });
 }
 
-// 3.3.5 to 3.4.0 were supported before; 3.4.2 and 3.5.0 are not tested yet.
-for (const [major, minor, patch] of [[3, 3, 5], [3, 3, 6], [3, 4, 0], [3, 4, 2], [3, 5, 0]]) {
+// 3.3.5 to 3.4.0 were supported before; 3.4.3 and 3.5.0 are not tested yet.
+for (const [major, minor, patch] of [[3, 3, 5], [3, 3, 6], [3, 4, 0], [3, 4, 3], [3, 5, 0]]) {
   test(`unsupported version ${major}.${minor}.${patch} → not ok`, async () => {
     const r = await checkGuard({ api: fakeApi({ major: major!, minor: minor!, patch: patch! }), db: fakeDb() });
     assert.equal(r.ok, false);
     assert.deepEqual(r.problems, [
-      `Immich version ${major}.${minor}.${patch} not supported (supported: 3.4.1)`,
+      `Immich version ${major}.${minor}.${patch} not supported (supported: 3.4.1, 3.4.2)`,
     ]);
   });
 }

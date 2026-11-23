@@ -10,7 +10,7 @@ import {
 
 const MEMBER = '00000000-0000-4000-8000-0000000a0001';
 const ok: GuardResult = { ok: true, problems: [], checkedAt: new Date() };
-const bad: GuardResult = { ok: false, problems: ['Immich version 3.4.2 not supported (supported: 3.4.1)'], checkedAt: new Date() };
+const bad: GuardResult = { ok: false, problems: ['Immich version 3.5.0 not supported (supported: 3.4.1, 3.4.2)'], checkedAt: new Date() };
 const silent = { info: () => {}, error: () => {} };
 
 // Fake Immich: asset id → visibility ('missing' = not there); `units` = a picked id's originals

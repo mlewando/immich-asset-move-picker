@@ -31,12 +31,12 @@ opens the photo, Esc clears the selection and Ctrl/Cmd+A selects every photo sho
 selected. "Skip to photos" is the 1st Tab stop. On the Queue page the job tiles of In progress
 and of Done are 1 Tab stop each the same way; Enter or Space opens the job.
 
-> Works only with **Immich v3.4.1**.
+> Works only with **Immich v3.4.1 or v3.4.2**.
 > It writes to Immich's database and library directly, so on any other version (or schema) it
 > stays read-only until it has been tested and updated. Each release's notes repeat its range.
 
 ## Requirements
-- **Immich v3.4.1**, with the library reachable as
+- **Immich v3.4.1 or v3.4.2**, with the library reachable as
   files.
 - An **API key of the family account** with the permissions `asset.upload`, `asset.update`,
   `asset.delete`, `stack.create` and `user.read`.
@@ -110,7 +110,7 @@ copies are filed into their folders (the app reminds you).
 linked because they differ) and `immich_picker_last_write_timestamp_seconds`.
 
 ## Development
-Needs Node 24 and Docker. Everything runs against a throwaway local Immich (v3.4.1, the newest
+Needs Node 24 and Docker. Everything runs against a throwaway local Immich (v3.4.2, the newest
 supported) with test users (`anna`, `bob`, `family-photos`, password `password123`).
 ```sh
 npm install
@@ -129,7 +129,7 @@ once and retry, some are refused. http://127.0.0.1:2285/dev lists other scenario
 empty accounts, long queues, thumbnails Immich is still making, paused, read-only); each link
 starts it afresh.
 To test another Immich version (before adding it to the supported ones), start over with it
-(Immich can't downgrade its database): `npm run dev:reset`, then `export IMMICH_VERSION=v3.4.2`,
+(Immich can't downgrade its database): `npm run dev:reset`, then `export IMMICH_VERSION=v3.5.0`,
 `npm run dev:up`, `npm run dev:seed`, `npm run test:int`.
 `npm run dev:app` runs without a login. To try the real one, a local Authelia (the homelab's
 version, the same picker client and group policy) runs next to Immich:

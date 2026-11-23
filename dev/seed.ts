@@ -12,7 +12,7 @@ const FIXTURES = join(DATA, 'fixtures');
 const COMPOSE = ['compose', '-f', join(DEV, 'compose.yml')];
 const API = 'http://127.0.0.1:2283/api';
 // Same version and default as dev/compose.yml.
-const IMMICH_IMAGE = `ghcr.io/immich-app/immich-server:${process.env.IMMICH_VERSION || 'v3.4.1'}`;
+const IMMICH_IMAGE = `ghcr.io/immich-app/immich-server:${process.env.IMMICH_VERSION || 'v3.4.2'}`;
 const PASSWORD = 'password123';
 const PICKER_DB = { user: 'immich_picker', password: 'picker-dev' };
 
