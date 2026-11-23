@@ -41,8 +41,8 @@ export function MediaBadges({ item }) {
 export function StatusBadges({ item }) {
   const tag = 'rounded-md px-1.5 py-0.5 text-[11px] font-medium leading-none text-white';
   return html`
-    ${item.inFamily && html`<span class=${`${tag} bg-emerald-600/90`} title="Same bytes already in the family account">in family</span>`}
-    ${item.edited && html`<span class=${`${tag} bg-amber-600/90`} title="Crop/rotate/mirror done in Immich are not carried to the family copy">edits not carried</span>`}
+    ${item.inFamily && html`<span class=${`${tag} bg-emerald-700`} title="Same bytes already in the family account">in family</span>`}
+    ${item.edited && html`<span class=${`${tag} bg-amber-700`} title="Crop/rotate/mirror done in Immich are not carried to the family copy">edits not carried</span>`}
     ${item.noOrigin && html`<span class=${`${tag} bg-neutral-600/90`} title="No original to give back to">no origin</span>`}`;
 }
 
