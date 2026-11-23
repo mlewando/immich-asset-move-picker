@@ -324,7 +324,7 @@ function ReadOnlyBanner({ problems, checking, onCheckAgain }) {
       >${open ? 'Hide details' : 'Details'}</button>
       <${CheckAgain} checking=${checking} onClick=${onCheckAgain} />
     </div>
-    ${open && html`<p id="read-only-details" class="mt-1.5 break-words pl-6 text-amber-200/90">${problems.join(' • ')}</p>`}
+    ${open && html`<p class="mt-1.5 break-words pl-6 text-amber-200/90">${problems.join(' • ')}</p>`}
   </div>`;
 }
 
@@ -712,6 +712,8 @@ function App() {
         onClick=${() => {
           toast.action.run();
           setToast(null);
+          // The button that had the focus is gone: it goes to the page's content.
+          requestAnimationFrame(focusPhotos);
         }}
       >${toast.action.label}</button>`}</div>`;
   const skipTo = (e) => {
