@@ -300,13 +300,15 @@ function Detail({ job, closing, memberName, readOnly, onRetry, toast, onClose })
     else d.showModal();
     heading.current?.focus({ preventScroll: true });
   }, [wide]);
-  // Where the job's tile was when it opened: its section and place there.
+  // Where the job's tile is: its section and place there, kept as they were once it left them.
   const origin = useRef(null);
   useEffect(() => {
     const tile = document.querySelector(`[data-job="${job.id}"]`);
+    const o = origin.current;
+    if (o?.id === job.id && o.section && !o.section.contains(tile)) return;
     const section = tile?.closest('section');
     origin.current = { id: job.id, section, index: section ? [...section.querySelectorAll('[data-job]')].indexOf(tile) : -1 };
-  }, [job.id]);
+  });
   // Gone (after sliding out): the focus goes back to the job's tile, for keyboard users. If the
   // job left that section meanwhile (it finished, a retry moved it), to the tile now at its place
   // (else the section's last), as when a focused tile goes; the section's button if none is left
@@ -317,14 +319,15 @@ function Detail({ job, closing, memberName, readOnly, onRetry, toast, onClose })
       const active = document.activeElement;
       if (active && active !== document.body) return;
       const { id, section, index } = origin.current;
+      if (section && !section.isConnected) return; // the page changed
       const tile = document.querySelector(`[data-job="${id}"]`);
       let target = tile;
-      if (section?.isConnected && !section.contains(tile)) {
+      if (section && !section.contains(tile)) {
         const left = section.querySelectorAll('[data-job]');
         target = left[Math.min(index, left.length - 1)];
       }
       if (target?.closest('[hidden]')) target = null;
-      target ??= (section?.isConnected ? section : tile?.closest('section'))?.querySelector('button[aria-controls]') ?? document.getElementById('main');
+      target ??= (section ?? tile?.closest('section'))?.querySelector('button[aria-controls]');
       target?.focus({ preventScroll: true });
     },
     [],
