@@ -227,23 +227,18 @@ const Logo = () => html`<div class="flex h-14 shrink-0 items-center gap-3 px-3">
 </div>`;
 
 function Sidebar(props) {
-  const { collapsed, drawerOpen, onCloseDrawer, onToggle } = props;
-  // The drawer (phone) is a modal <dialog>: the browser makes the page behind inert, keeps Tab
-  // inside, closes it on Esc and gives the focus back to the Menu button. A tap beside it closes
-  // it too; from md up it isn't shown, so it closes there.
-  const drawer = useRef(null);
+  const { collapsed, drawer, onToggle } = props;
+  // The drawer (phone) is a modal <dialog> that owns its open state (the Menu button opens it):
+  // the browser makes the page behind inert, keeps Tab inside, closes it on Esc and gives the
+  // focus back to the Menu button. A tap beside it closes it too; from md up it isn't shown, so
+  // it closes there (hidden, it would still leave the page inert).
+  const closeDrawer = () => drawer.current?.close();
   useEffect(() => {
-    const d = drawer.current;
-    if (!drawerOpen) {
-      if (d.open) d.close();
-      return;
-    }
-    if (!d.open) d.showModal();
     const wide = matchMedia('(min-width: 48rem)'); // Tailwind's md
-    const onWide = () => wide.matches && onCloseDrawer();
+    const onWide = () => wide.matches && closeDrawer();
     wide.addEventListener('change', onWide);
     return () => wide.removeEventListener('change', onWide);
-  }, [drawerOpen]);
+  }, []);
   return html`
     <aside
       class=${`sticky top-0 hidden h-dvh shrink-0 flex-col overflow-hidden whitespace-nowrap border-r border-white/5 bg-neutral-900/60 px-2 pb-2 transition-[width] duration-200 md:flex ${collapsed ? 'w-[4.5rem]' : 'w-64'}`}
@@ -255,17 +250,15 @@ function Sidebar(props) {
       ref=${drawer}
       class="fixed inset-y-0 left-0 m-0 h-dvh max-h-none w-72 max-w-[85vw] border-0 bg-neutral-900 p-0 text-neutral-100 shadow-2xl backdrop:bg-black/60 motion-safe:animate-drawer-in motion-safe:backdrop:animate-fade-in md:hidden"
       aria-label="Menu"
-      onClose=${onCloseDrawer}
-      onClick=${(e) => e.target === e.currentTarget && onCloseDrawer()}
+      onClick=${(e) => e.target === e.currentTarget && closeDrawer()}
     >
-      ${drawerOpen &&
-      html`<div class="flex h-full flex-col whitespace-nowrap px-2 pb-2">
+      <div class="flex h-full flex-col whitespace-nowrap px-2 pb-2">
         <div class="flex items-center">
           <div class="min-w-0 flex-1"><${Logo} /></div>
-          <button class=${`mr-1 grid size-9 place-items-center rounded-full text-neutral-300 hover:bg-white/10 ${focusRing}`} onClick=${onCloseDrawer} aria-label="Close menu"><${Icon} name="close" /></button>
+          <button class=${`mr-1 grid size-9 place-items-center rounded-full text-neutral-300 hover:bg-white/10 ${focusRing}`} onClick=${closeDrawer} aria-label="Close menu"><${Icon} name="close" /></button>
         </div>
-        <${SidebarBody} ...${props} collapsed=${false} onNavigate=${onCloseDrawer} onToggle=${null} />
-      </div>`}
+        <${SidebarBody} ...${props} collapsed=${false} onNavigate=${closeDrawer} onToggle=${null} />
+      </div>
     </dialog>`;
 }
 
@@ -589,16 +582,15 @@ function App() {
   }, []);
 
   const [collapsed, toggleCollapsed] = useCollapsed();
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const onMenu = useCallback(() => setDrawerOpen(true), []);
-  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+  const drawer = useRef(null);
+  const onMenu = useCallback(() => drawer.current?.showModal(), []);
 
   // On a timeline: Esc clears the selection, Ctrl/Cmd+A selects every photo. Not while
   // something is open on top (viewer, menu, a dropdown: their own Esc closes them first). The
   // latest state comes through a ref: keys pressed quickly can arrive before an effect re-subscribes.
   const keyState = useRef(null);
   const onTimeline = items && route.kind !== 'queue';
-  keyState.current = { items, selected, isSelectable, on: onTimeline && !viewerOpen && !drawerOpen };
+  keyState.current = { items, selected, isSelectable, on: onTimeline && !viewerOpen };
   useEffect(() => {
     const onKey = (e) => {
       const esc = e.key === 'Escape';
@@ -665,8 +657,7 @@ function App() {
         jobs=${summary}
         collapsed=${collapsed}
         onToggle=${toggleCollapsed}
-        drawerOpen=${drawerOpen}
-        onCloseDrawer=${closeDrawer}
+        drawer=${drawer}
       />
       <div class="min-w-0 flex-1 lg:has-[[data-panel]]:pr-[28rem]">
         <${TopBar}
