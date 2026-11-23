@@ -70,8 +70,8 @@ function JobRows({ section, refreshKey, readOnly, onOpenJob, onRetry }) {
       stop = true;
     };
   }, [section, refreshKey]);
-  if (jobs === null) return html`<p class="px-4 py-6 text-center text-sm text-neutral-500">Loading…</p>`;
-  if (!jobs.length) return html`<p class="px-4 py-6 text-center text-sm text-neutral-500">Nothing here any more.</p>`;
+  if (jobs === null) return html`<p class="px-4 py-6 text-center text-sm text-neutral-400">Loading…</p>`;
+  if (!jobs.length) return html`<p class="px-4 py-6 text-center text-sm text-neutral-400">Nothing here any more.</p>`;
   return html`<ul class="min-h-0 flex-1 divide-y divide-white/5 overflow-y-auto">
     ${jobs.map((j) => {
       const s = stateOf(j);

@@ -167,7 +167,7 @@ function SidebarBody({ members, route, user, jobs, collapsed, onNavigate, onTogg
   const active = jobs ? jobs.pending + jobs.running : 0;
   const failed = jobs ? jobs.failed.length : 0;
   const label = (text) =>
-    html`<div class=${`flex h-9 items-end px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-neutral-500 transition-opacity ${collapsed ? 'opacity-0' : ''}`} aria-hidden=${collapsed}>${text}</div>`;
+    html`<div class=${`flex h-9 items-end px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-neutral-400 transition-opacity ${collapsed ? 'opacity-0' : ''}`} aria-hidden=${collapsed}>${text}</div>`;
   const count = (n, tone, title) =>
     n > 0 &&
     html`<span class=${`shrink-0 rounded-full px-2 text-xs ${tone === 'bad' ? 'bg-rose-500/20 text-rose-200' : 'bg-sky-500/20 text-sky-200'}`} title=${title}>${n}<span class="sr-only"> ${title.toLowerCase()}</span></span>`;
@@ -184,7 +184,7 @@ function SidebarBody({ members, route, user, jobs, collapsed, onNavigate, onTogg
             </span>
             <span class="min-w-0">
               <span class="block truncate font-medium">${m.name}</span>
-              <span class="block truncate text-xs text-neutral-500">${m.email}</span>
+              <span class="block truncate text-xs text-neutral-400">${m.email}</span>
             </span>
           </${NavItem}>`,
         )}
@@ -287,8 +287,8 @@ function TopBar({ title, count, selectedCount, selectedFiles, action, tileSize, 
       <button class=${`${iconBtn} md:hidden`} onClick=${onMenu} aria-label="Menu" title="Menu"><${Icon} name="menu" /></button>
       <div class="min-w-16 flex-1 truncate">
         <h1 class="inline text-base font-semibold">${title}</h1>
-        ${count !== null && html`<span class="ml-2 hidden text-sm text-neutral-500 @2xl:inline">${count} items</span>`}
-        ${count !== null && html`<span class="hidden text-sm text-neutral-500 @5xl:inline"> • drag to select, Alt+drag to unselect</span>`}
+        ${count !== null && html`<span class="ml-2 hidden text-sm text-neutral-400 @2xl:inline">${count} items</span>`}
+        ${count !== null && html`<span class="hidden text-sm text-neutral-400 @5xl:inline"> • drag to select, Alt+drag to unselect</span>`}
       </div>
       ${jobs}
       <div class="hidden items-center gap-1 @lg:flex" title="Thumbnail size">
@@ -724,7 +724,7 @@ function App() {
             onSelectJob=${openJob}
           />`}
           ${error && html`<p class="py-16 text-center text-rose-300" role="alert">${error}</p>`}
-          ${!error && items === null && gridKey && html`<p class="py-16 text-center text-neutral-500">Loading…</p>`}
+          ${!error && items === null && gridKey && html`<p class="py-16 text-center text-neutral-400">Loading…</p>`}
           ${items &&
           html`<${Grid}
             items=${items}

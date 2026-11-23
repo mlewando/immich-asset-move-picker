@@ -32,9 +32,9 @@ export function FilterBar({ albums, filter, onChange }) {
       ${(albums.length > 0 || filter.album) &&
       html`<${AlbumPicker} albums=${albums} value=${filter.album} onChange=${(album) => onChange({ ...filter, album })} />`}
       <div class="flex min-w-0 items-center gap-1.5 max-sm:flex-1" role="group" aria-label="Days taken">
-        <${Icon} name="clock" class="hidden size-4 shrink-0 text-neutral-500 sm:block" />
+        <${Icon} name="clock" class="hidden size-4 shrink-0 text-neutral-400 sm:block" />
         <input ref=${fromField} type="date" class=${dateField(!!filter.from)} value=${filter.from} max=${filter.to || undefined} onChange=${set('from')} aria-label="From day" title="From day" />
-        <span class="text-neutral-500" aria-hidden="true">–</span>
+        <span class="text-neutral-400" aria-hidden="true">–</span>
         <input type="date" class=${dateField(!!filter.to)} value=${filter.to} min=${filter.from || undefined} onChange=${set('to')} aria-label="To day" title="To day" />
       </div>
       ${active &&

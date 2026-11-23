@@ -122,7 +122,7 @@ function FailedCard({ job, active, memberName, readOnly, onOpen, onRetry }) {
       <span class="min-w-0 flex-1">
         <span class="block truncate text-sm font-medium">${job.fileName ?? job.thumbAssetId}</span>
         <span class="mt-0.5 line-clamp-2 break-words text-xs text-rose-300">${job.error}</span>
-        <span class="mt-0.5 block truncate text-[11px] text-neutral-500">
+        <span class="mt-0.5 block truncate text-[11px] text-neutral-400">
           ${[kindLabel(job), memberName, ago(job.updatedAt)].filter(Boolean).join(' • ')}
         </span>
       </span>
@@ -152,9 +152,9 @@ function Section({ id, title, count, open, onToggle, extra, data, empty, childre
     </div>
     <div id=${`section-${id}`} hidden=${!open} class="pt-2">
       ${data.jobs === null
-        ? html`<p class="text-sm text-neutral-500">Loading…</p>`
+        ? html`<p class="text-sm text-neutral-400">Loading…</p>`
         : data.jobs.length === 0
-          ? html`<p class="text-sm text-neutral-500">${empty}</p>`
+          ? html`<p class="text-sm text-neutral-400">${empty}</p>`
           : children}
       ${data.next !== null &&
       html`<button class=${`mt-3 rounded-full bg-white/10 px-4 py-1.5 text-sm hover:bg-white/20 ${focusRing}`} onClick=${data.more}>Load more</button>`}
@@ -200,7 +200,7 @@ function Steps({ job }) {
     warn: 'bg-amber-400 text-neutral-950',
     busy: 'bg-sky-500 text-white ring-4 ring-sky-500/25 animate-pulse',
     idle: 'bg-neutral-600 text-white',
-    todo: 'bg-neutral-800 text-neutral-500 ring-1 ring-inset ring-white/10',
+    todo: 'bg-neutral-800 text-neutral-400 ring-1 ring-inset ring-white/10',
   };
   return html`<ol class="flex items-start" aria-label="Steps">
     ${steps.map(([key, label], i) => {
@@ -218,7 +218,7 @@ function Steps({ job }) {
                 ? html`<${Icon} name="refresh" class="size-3.5" />`
                 : html`<span class="text-[10px] font-semibold">${i + 1}</span>`}
         </span>
-        <span class=${`text-center text-[11px] leading-tight ${state === 'todo' ? 'text-neutral-500' : 'text-neutral-300'}`}>${label}</span>
+        <span class=${`text-center text-[11px] leading-tight ${state === 'todo' ? 'text-neutral-400' : 'text-neutral-300'}`}>${label}</span>
       </li>`;
     })}
   </ol>`;
@@ -235,8 +235,8 @@ const EVENT_ICON = {
 };
 
 function History({ events }) {
-  if (events === null) return html`<p class="text-sm text-neutral-500">Loading…</p>`;
-  if (events.length === 0) return html`<p class="text-sm text-neutral-500">No history: queued before the picker kept it.</p>`;
+  if (events === null) return html`<p class="text-sm text-neutral-400">Loading…</p>`;
+  if (events.length === 0) return html`<p class="text-sm text-neutral-400">No history: queued before the picker kept it.</p>`;
   return html`<ol class="space-y-3">
     ${events.map((e, i) => {
       const ev = eventOf(e);
@@ -247,7 +247,7 @@ function History({ events }) {
         <div class="min-w-0 flex-1 pt-0.5">
           <div class="flex flex-wrap items-baseline justify-between gap-x-2">
             <span class="text-sm">${ev.text}</span>
-            <time class="text-[11px] text-neutral-500" datetime=${e.at} title=${time(e.at)}>${time(e.at)}</time>
+            <time class="text-[11px] text-neutral-400" datetime=${e.at} title=${time(e.at)}>${time(e.at)}</time>
           </div>
           ${e.by && html`<div class="text-xs text-neutral-400">by ${e.by}</div>`}
           ${e.message &&
@@ -346,7 +346,7 @@ function Detail({ job, closing, memberName, readOnly, onRetry, toast, onClose })
 
   const s = stateOf(job);
   const fact = (label, value) =>
-    value && html`<div class="min-w-0"><dt class="text-[11px] uppercase tracking-wider text-neutral-500">${label}</dt><dd class="truncate text-sm" title=${value}>${value}</dd></div>`;
+    value && html`<div class="min-w-0"><dt class="text-[11px] uppercase tracking-wider text-neutral-400">${label}</dt><dd class="truncate text-sm" title=${value}>${value}</dd></div>`;
   return html`
     <dialog
       ref=${dialog}
@@ -384,7 +384,7 @@ function Detail({ job, closing, memberName, readOnly, onRetry, toast, onClose })
         <div class="space-y-5 px-5 py-4">
           <div class="flex items-center gap-2">
             <${Chip} tone=${s.tone}>${s.text}</${Chip}>
-            <span class="text-xs text-neutral-500" title=${time(job.updatedAt)}>${ago(job.updatedAt)}</span>
+            <span class="text-xs text-neutral-400" title=${time(job.updatedAt)}>${ago(job.updatedAt)}</span>
           </div>
           ${job.error && job.status !== 'done' &&
           html`<p class=${`break-words rounded-lg px-3 py-2 text-sm ${job.status === 'failed' ? 'bg-rose-500/10 text-rose-200' : 'bg-amber-500/10 text-amber-200'}`}>${job.error}</p>`}
@@ -396,7 +396,7 @@ function Detail({ job, closing, memberName, readOnly, onRetry, toast, onClose })
             ${fact('Job', `#${job.id}`)}
           </dl>
           <div>
-            <h3 class="pb-3 text-[11px] font-semibold uppercase tracking-wider text-neutral-500">History</h3>
+            <h3 class="pb-3 text-[11px] font-semibold uppercase tracking-wider text-neutral-400">History</h3>
             <${History} events=${events} />
           </div>
         </div>
@@ -461,9 +461,9 @@ export function QueuePage({ summary, members, tileSize, readOnly, onRetry, toast
   // Nothing ever queued (or all of it pruned): 1 message rather than 3 empty sections.
   if (summary && !summary.failed.length && !summary.pending && !summary.running && !summary.done) {
     return html`<div class="flex flex-col items-center gap-2 py-20 text-center">
-      <span class="grid size-14 place-items-center rounded-full bg-white/5 text-neutral-500"><${Icon} name="queue" class="size-7" /></span>
+      <span class="grid size-14 place-items-center rounded-full bg-white/5 text-neutral-400"><${Icon} name="queue" class="size-7" /></span>
       <p class="text-base font-medium text-neutral-300">The queue is empty</p>
-      <p class="max-w-sm text-sm text-neutral-500">Select photos on a member’s timeline and Move them to the family account: each move shows up here, with its steps and history.</p>
+      <p class="max-w-sm text-sm text-neutral-400">Select photos on a member’s timeline and Move them to the family account: each move shows up here, with its steps and history.</p>
     </div>`;
   }
 
