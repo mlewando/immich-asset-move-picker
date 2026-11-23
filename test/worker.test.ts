@@ -418,6 +418,23 @@ test('worker: the timer\'s quick check doesn\'t leak into Check again', async ()
   await wk.idle();
 });
 
+test('worker: Check again says whether a step was still running when it passed', async () => {
+  const s = setup({ a: 'timeline' });
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER });
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const immich = { ...s.immich, copyToFamily: async (id: string) => (await gate, s.immich.copyToFamily(id)) };
+  let up = false;
+  const wk = createWorker({ ...s.deps, immich, guard: async () => (up ? ok : bad), log: silent, recheckMs: 60_000 });
+  wk.kick();
+  await wk.idle(); // paused
+  up = true;
+  assert.equal((await wk.recheck()).running, false, 'idle when the check passed: moves resumed');
+  assert.equal((await wk.recheck()).running, true, 'the copy it started is still stuck');
+  release();
+  await wk.idle();
+});
+
 test('worker: on resume, jobs waiting for an automatic retry are tried at once, attempts kept', async () => {
   const s = setup({ a: 'timeline' });
   s.queue.enqueue('move', ['a'], { memberId: MEMBER });

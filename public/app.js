@@ -473,7 +473,11 @@ function App() {
       const r = await api.recheck();
       setStatus((s) => ({ ...s, ...r }));
       await refreshJobs();
-      setToast(r.readOnly ? { kind: 'warn', text: 'Still not working' } : { kind: 'ok', text: 'Working again: moves resumed' });
+      setToast(
+        r.readOnly
+          ? { kind: 'warn', text: 'Still not working' }
+          : { kind: 'ok', text: r.busy ? 'Working again; moves continue after the current step' : 'Working again: moves resumed' },
+      );
     } catch (e) {
       setToast({ kind: 'error', text: e.message });
     } finally {

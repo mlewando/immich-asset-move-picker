@@ -239,10 +239,11 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
   // "Check again": runs the guard now and, if it passes, the jobs go on. Allowed while read-only:
   // it is the way out of it.
   app.post('/api/recheck', async (req) => {
-    await deps.worker.recheck();
+    const found = await deps.worker.recheck();
     const { ok, problems } = guardState();
     req.log.info({ by: req.user?.email ?? null, ok }, 'check again requested');
-    return { readOnly: !ok, problems };
+    // busy: a step still running (e.g. 1 stuck on Immich) holds up the rest until it ends.
+    return { readOnly: !ok, problems, busy: found.running };
   });
 
   app.get('/api/members', { schema: { response: { 200: { type: 'array', items: memberSchema } } } }, async () =>

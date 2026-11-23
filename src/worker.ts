@@ -177,7 +177,9 @@ export type Worker = {
   state(): WorkerState;
   /**
    * Runs the guard now, without waiting for the next check, and starts working if it passes
-   * (the curator's "Check again"). Calls made while 1 runs share it.
+   * (the curator's "Check again"). Calls made while 1 runs share it. Returns the state as the
+   * check found it: `running` means a run was still going (e.g. a slow step), so work goes on only
+   * once that step ends.
    */
   recheck(): Promise<WorkerState>;
   /** Resolves once the current run (if any) has finished. */
@@ -333,9 +335,11 @@ export function createWorker(
 
   const recheck = (): Promise<WorkerState> => {
     checking ??= (async () => {
-      if (applyGuard(await runGuard())) kick();
+      const ok = applyGuard(await runGuard());
+      const found = state();
+      if (ok) kick();
       else if (!running) scheduleWake(); // found paused while idle: keep checking
-      return state();
+      return found;
     })().finally(() => {
       checking = null;
     });
