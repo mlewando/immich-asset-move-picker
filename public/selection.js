@@ -12,6 +12,15 @@ export function groupByDay(items) {
   return groups;
 }
 
+/**
+ * How many files these items are (a live photo is 2, a stack all its photos'): what a move or
+ * give back of them handles. ids: a Set or an array; ids of no item count nothing.
+ */
+export function fileCount(items, ids) {
+  const wanted = new Set(ids);
+  return items.reduce((n, item) => (wanted.has(item.id) ? n + item.files : n), 0);
+}
+
 export function toggleOne(selected, id) {
   const next = new Set(selected);
   if (next.has(id)) next.delete(id);

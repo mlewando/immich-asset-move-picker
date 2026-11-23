@@ -35,7 +35,8 @@ const originalsOf = (job: Job): string[] => job.originals ?? [job.sourceAssetId]
  *
  * The original is archived only once its family copy fully exists, so a failure before that
  * leaves the member's timeline untouched. A live photo moves with its video, a stack whole
- * (copyToFamily returns the originals, recorded with 'copied').
+ * (copyToFamily returns the originals, recorded with 'copied', and how many files they are, for
+ * the history).
  *
  * Immich makes the family copy's thumbnail and preview in its own time (hours behind for a big
  * batch): until then this returns 'waiting', and checkThumbnails finishes the move later.
@@ -55,9 +56,13 @@ export async function runMove(deps: JobDeps, job: Job): Promise<'done' | 'waitin
     const history = deps.queue.events(job.id) ?? [];
     const firstTry = history.length === 1 && history[0]!.type === 'queued';
     const outcome = copy.uploaded > 0 ? undefined : firstTry ? 'existing' : 'unknown';
+    // How many files the move is made of, when more than the 1 photo picked (a live photo, a
+    // stack); how many of them were copied only where that is known (see above).
     const notes: string[] = [];
-    if (firstTry && copy.uploaded > 0 && copy.uploaded < originals.length) {
-      notes.push(`${originals.length - copy.uploaded} of ${originals.length} photos already there, not copied`);
+    if (copy.files > 1) {
+      if (!firstTry || copy.uploaded === 0) notes.push(`${copy.files} files`);
+      else if (copy.uploaded === copy.files) notes.push(`${copy.files} files copied`);
+      else notes.push(`${copy.uploaded} of ${copy.files} files copied, ${copy.files - copy.uploaded} already there`);
     }
     // Only for the history: the family copy is not put into the member's albums.
     const albums = await deps.immich.albumsOf(originals);

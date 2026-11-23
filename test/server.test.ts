@@ -16,7 +16,7 @@ const ANNA = '00000000-0000-4000-8000-0000000a0001';
 const ASSET = '00000000-0000-4000-8000-00000000a551';
 const item = (id: string): GridItem => ({
   id, type: 'image', localDateTime: '2026-07-01T09:12:00.000Z', day: '2026-07-01', fileName: 'x.jpg',
-  width: 10, height: 10, durationMs: null, livePhotoVideoId: null, stack: null, edited: false,
+  width: 10, height: 10, durationMs: null, livePhotoVideoId: null, stack: null, files: 1, edited: false,
 });
 
 // Local files mediaFile() may return: 1 video (bytes 0..99), 1 thumbnail, 1 dotfile.
@@ -138,13 +138,17 @@ test('moves: queues every id (the worker decides what can move), kicks the worke
   const other = '00000000-0000-4000-8000-00000000a552';
   const res = await call({ guard: guardOk, immich: members(), queue, worker }, post('/api/moves', { memberId: ANNA, assetIds: [ASSET, other] }));
   assert.equal(res.statusCode, 202);
-  assert.deepEqual(res.json(), { queued: 2, alreadyQueued: 0 });
+  assert.deepEqual(res.json(), { queued: 2, alreadyQueued: 0, queuedIds: [ASSET, other] });
   assert.equal(worker.kicks(), 1);
 
-  // Same asset again while its move is unfinished → not queued twice.
-  const again = await call({ guard: guardOk, immich: members(), queue, worker }, post('/api/moves', { memberId: ANNA, assetIds: [ASSET] }));
-  assert.deepEqual(again.json(), { queued: 0, alreadyQueued: 1 });
-  assert.equal(worker.kicks(), 1);
+  // Same asset again while its move is unfinished → not queued twice; the answer names the new one.
+  const third = '00000000-0000-4000-8000-00000000a553';
+  const again = await call({ guard: guardOk, immich: members(), queue, worker }, post('/api/moves', { memberId: ANNA, assetIds: [ASSET, third] }));
+  assert.deepEqual(again.json(), { queued: 1, alreadyQueued: 1, queuedIds: [third] });
+  assert.equal(worker.kicks(), 2);
+  const none = await call({ guard: guardOk, immich: members(), queue, worker }, post('/api/moves', { memberId: ANNA, assetIds: [ASSET] }));
+  assert.deepEqual(none.json(), { queued: 0, alreadyQueued: 1, queuedIds: [] });
+  assert.equal(worker.kicks(), 2);
 });
 
 test('moves: refused while read-only, for the family account, bad body', async () => {
@@ -162,10 +166,10 @@ test('give backs: queued as kind giveback, kick, not twice; refused while read-o
   const worker = fakeWorker();
   const res = await call({ guard: guardOk, queue, worker }, post('/api/givebacks', { assetIds: [ASSET] }));
   assert.equal(res.statusCode, 202);
-  assert.deepEqual(res.json(), { queued: 1, alreadyQueued: 0 });
+  assert.deepEqual(res.json(), { queued: 1, alreadyQueued: 0, queuedIds: [ASSET] });
   assert.equal(worker.kicks(), 1);
   assert.equal(queue.claimNext()!.kind, 'giveback');
-  assert.deepEqual((await call({ guard: guardOk, queue, worker }, post('/api/givebacks', { assetIds: [ASSET] }))).json(), { queued: 0, alreadyQueued: 1 });
+  assert.deepEqual((await call({ guard: guardOk, queue, worker }, post('/api/givebacks', { assetIds: [ASSET] }))).json(), { queued: 0, alreadyQueued: 1, queuedIds: [] });
   assert.equal((await call({ guard: () => failedGuard }, post('/api/givebacks', { assetIds: [ASSET] }))).statusCode, 409);
   assert.equal((await call({ guard: guardOk }, post('/api/givebacks', { assetIds: ['x'] }))).statusCode, 400);
 });

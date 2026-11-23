@@ -61,6 +61,11 @@ test("Anna's timeline: timeline only, 1 entry per stack, badges", async () => {
 
   assert.deepEqual(m.get('burst-1.jpg')!.stack?.size, 3);
   assert.ok(m.get('live-still.jpg')!.livePhotoVideoId);
+  assert.deepEqual(
+    ['photo-1.jpg', 'clip.mp4', 'live-still.jpg', 'burst-1.jpg'].map((n) => m.get(n)!.files),
+    [1, 1, 2, 3],
+    'files: a live photo with its video, a stack all its photos',
+  );
   assert.equal(m.get('photo-5.jpg')!.edited, true);
   assert.equal(m.get('clip.mp4')!.type, 'video');
   assert.equal(m.get('clip.mp4')!.durationMs, 3000);

@@ -18,6 +18,8 @@ export type GridItem = {
   durationMs: number | null;
   livePhotoVideoId: string | null; // set → LIVE badge; play /media/<this>/video
   stack: { id: string; size: number } | null; // only the stack's primary is listed
+  // Files a move or give back of it handles: 1, a live photo 2 (its video), a stack all its members'.
+  files: number;
   edited: boolean; // Immich edits (crop/rotate/mirror): a move does not carry them
   inFamily?: boolean; // member timeline: same bytes already in the family account
   noOrigin?: boolean; // family timeline: no original to give back to
@@ -37,6 +39,7 @@ type Row = {
   isEdited: boolean;
   stackId: string | null;
   stackSize: number | null;
+  files: number;
   inFamily?: boolean;
   hasOrigin?: boolean;
 };
@@ -55,12 +58,17 @@ const ON_TIMELINE = `a.visibility = 'timeline' AND a."deletedAt" IS NULL AND a.s
 const TIMELINE_SQL = (extraColumns: string, extraWhere = '') => `
   SELECT a.id, a.type, a."localDateTime", a."originalFileName", a.width, a.height, a.duration,
          a."livePhotoVideoId", a."isEdited", a."stackId",
-         CASE WHEN a."stackId" IS NOT NULL THEN
-           (SELECT count(*)::int FROM asset s
-             WHERE s."stackId" = a."stackId" AND s."deletedAt" IS NULL AND s.status = 'active')
-         END AS "stackSize"
+         CASE WHEN a."stackId" IS NOT NULL THEN sm.size END AS "stackSize",
+         CASE WHEN a."stackId" IS NOT NULL THEN sm.size + sm.live
+              ELSE 1 + (a."livePhotoVideoId" IS NOT NULL)::int
+         END AS files
          ${extraColumns}
     FROM asset a
+         -- The stack's live members, and how many of them are live photos (1 file more each). Not
+         -- looked up for a photo in no stack.
+         CROSS JOIN LATERAL (SELECT count(*)::int AS size, count(s."livePhotoVideoId")::int AS live FROM asset s
+                              WHERE a."stackId" IS NOT NULL AND s."stackId" = a."stackId"
+                                AND s."deletedAt" IS NULL AND s.status = 'active') sm
    WHERE a."ownerId" = $1
      AND ${ON_TIMELINE}
      AND (a."stackId" IS NULL
@@ -93,6 +101,7 @@ function toGridItem(r: Row): GridItem {
     durationMs: r.duration,
     livePhotoVideoId: r.livePhotoVideoId,
     stack: r.stackId ? { id: r.stackId, size: r.stackSize ?? 1 } : null,
+    files: r.files,
     edited: r.isEdited,
   };
 }

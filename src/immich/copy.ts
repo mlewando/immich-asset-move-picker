@@ -6,7 +6,7 @@
 //     primary first;
 //   - the family account already has these bytes (an earlier move, another member's copy, put
 //     there by hand, or this move before a crash) → that asset, no upload (the result counts the
-//     uploads, for the job history);
+//     files and the uploads, for the job history);
 //   - carries the metadata the member edited in Immich, unless the family copy has edits of its
 //     own (then they are kept; a repeat after a crash sees our own edit and skips too).
 import type { ImmichApi, MetadataPatch } from './api.ts';
@@ -56,12 +56,12 @@ export type CopyDeps = {
 };
 
 /**
- * familyAssetId: the copy of the picked asset; originals: what to archive afterwards; uploaded:
- * how many of the originals this call uploaded (the others' bytes were already in the family
- * account: there before, or uploaded by an earlier call that then failed). A live photo's video
- * isn't counted, only its still.
+ * familyAssetId: the copy of the picked asset; originals: what to archive afterwards; files: how
+ * many files the move is made of (1 per original, plus 1 per live photo's video); uploaded: how
+ * many of those files this call uploaded (the others' bytes were already in the family account:
+ * there before, or uploaded by an earlier call that then failed).
  */
-export type CopyResult = { familyAssetId: string; originals: string[]; uploaded: number };
+export type CopyResult = { familyAssetId: string; originals: string[]; files: number; uploaded: number };
 
 export async function copyToFamily(deps: CopyDeps, assetId: string): Promise<CopyResult> {
   const src = await deps.source(assetId);
@@ -69,7 +69,7 @@ export async function copyToFamily(deps: CopyDeps, assetId: string): Promise<Cop
   const familyId = await deps.familyId();
   if (!src.stackId) {
     const copy = await copyOne(deps, familyId, src);
-    return { familyAssetId: copy.id, originals: [src.id], uploaded: copy.uploaded ? 1 : 0 };
+    return { familyAssetId: copy.id, originals: [src.id], files: copy.files, uploaded: copy.uploaded };
   }
 
   const stack = await deps.stack(src.stackId);
@@ -83,14 +83,16 @@ export async function copyToFamily(deps: CopyDeps, assetId: string): Promise<Cop
   // Checked for all before copying any, so a refused member writes nothing.
   for (const m of members) refuseUnmovable(m, familyId);
   const copies: string[] = [];
+  let files = 0;
   let uploaded = 0;
   for (const m of members) {
     const copy = await copyOne(deps, familyId, m);
     copies.push(copy.id);
-    if (copy.uploaded) uploaded++;
+    files += copy.files;
+    uploaded += copy.uploaded;
   }
   if (copies.length > 1 && !(await deps.isStack(copies))) await deps.api.createStack(copies);
-  return { familyAssetId: copies[0]!, originals: members.map((m) => m.id), uploaded };
+  return { familyAssetId: copies[0]!, originals: members.map((m) => m.id), files, uploaded };
 }
 
 function refuseUnmovable(src: SourceAsset, familyId: string): void {
@@ -101,32 +103,40 @@ function refuseUnmovable(src: SourceAsset, familyId: string): void {
   if (src.checksumAlgorithm !== 'sha1') throw new Error(`unexpected checksum algorithm ${src.checksumAlgorithm}`);
 }
 
-/** 1 asset (+ its live-photo video) → its family copy's id, and whether this call uploaded it. */
-async function copyOne(deps: CopyDeps, familyId: string, src: SourceAsset): Promise<{ id: string; uploaded: boolean }> {
+/** 1 asset (+ its live-photo video) → its family copy's id, its files (1 or 2) and how many of them this call uploaded. */
+async function copyOne(deps: CopyDeps, familyId: string, src: SourceAsset): Promise<{ id: string; files: number; uploaded: number }> {
   refuseUnmovable(src, familyId);
 
+  const files = src.livePhotoVideoId ? 2 : 1;
+  let uploaded = 0;
   let videoId: string | undefined;
   if (src.livePhotoVideoId) {
     const video = await deps.source(src.livePhotoVideoId);
     if (!video || video.deletedAt || video.status !== 'active' || video.ownerId !== src.ownerId) {
       throw new Error("the live photo's video no longer exists");
     }
-    videoId = (await deps.familyAssetWithBytes(familyId, video.checksum))?.id ?? (await upload(deps, video)).id;
+    videoId = (await deps.familyAssetWithBytes(familyId, video.checksum))?.id;
+    if (!videoId) {
+      const up = await upload(deps, video);
+      videoId = up.id;
+      uploaded += Number(up.uploaded);
+    }
   }
 
   const existing = await deps.familyAssetWithBytes(familyId, src.checksum);
   let id: string;
-  let uploaded = false;
   if (existing) {
     id = existing.id;
     if (videoId && existing.livePhotoVideoId !== videoId) await deps.api.linkLivePhoto(id, videoId);
   } else {
-    ({ id, uploaded } = await upload(deps, src, videoId));
+    const up = await upload(deps, src, videoId);
+    id = up.id;
+    uploaded += Number(up.uploaded);
   }
 
   const patch = carriedMetadata(src);
   if (Object.keys(patch).length && !(await deps.editedInImmich(id))) await deps.api.updateMetadata(id, patch);
-  return { id, uploaded };
+  return { id, files, uploaded };
 }
 
 /** uploaded: false when Immich answered that the family account got these bytes meanwhile. */

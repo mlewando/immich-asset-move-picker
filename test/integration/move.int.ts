@@ -129,6 +129,14 @@ after(async () => {
   await db.close();
 });
 
+// The note of a done move's copy step, in its history.
+const copiedNote = async (sourceAssetId: string) => {
+  const { jobs } = (await json<{ jobs: { id: number; sourceAssetId: string }[] }>('/api/jobs/list?section=done')).body;
+  const job = jobs.find((j) => j.sourceAssetId === sourceAssetId)!;
+  const events = (await json<{ type: string; step: string; message: string | null }[]>(`/api/jobs/${job.id}/events`)).body;
+  return events.find((e) => e.type === 'step' && e.step === 'copied')!.message;
+};
+
 const familyApi = (method: string, path: string, body: unknown) =>
   fetch(`${config.immich.apiUrl}${path}`, {
     method,
@@ -158,7 +166,7 @@ test('move 3 photos: queued, done, originals archived, copies in the family time
   const ids = Object.values(moved).map((i) => i.id);
   const res = await post('/api/moves', { memberId: bob.id, assetIds: ids });
   assert.equal(res.status, 202);
-  assert.deepEqual(res.body, { queued: 3, alreadyQueued: 0 });
+  assert.deepEqual(res.body, { queued: 3, alreadyQueued: 0, queuedIds: ids });
 
   await settled();
   const summary = (await json<{ done: number; failed: { sourceAssetId: string }[] }>('/api/jobs')).body;
@@ -213,7 +221,7 @@ test("what can't move is queued, then fails with Immich's reason; nothing writte
   // give back below (a failed job's asset stays hidden until retried).
   const archived = moved['photo-9.jpg']!;
   const res = await post('/api/moves', { memberId: anna.id, assetIds: [nonPrimary, archived.id] });
-  assert.deepEqual(res.body, { queued: 2, alreadyQueued: 0 });
+  assert.deepEqual(res.body, { queued: 2, alreadyQueued: 0, queuedIds: [nonPrimary, archived.id] });
   await settled();
   const { failed } = (await json<{ failed: { sourceAssetId: string; fileName: string; step: string; error: string }[] }>('/api/jobs')).body;
   const byId = new Map(failed.map((f) => [f.sourceAssetId, f]));
@@ -240,7 +248,8 @@ test('live photo: video + still copied and linked, video hidden; only the still 
   await assertLinked(video);
   const familyGrid = (await json<GridItem[]>('/api/family/assets')).body;
   const live = familyGrid.find((i) => i.id === famStill)!;
-  assert.deepEqual([live.livePhotoVideoId, live.noOrigin], [famVideo, false]);
+  assert.deepEqual([live.livePhotoVideoId, live.noOrigin, live.files], [famVideo, false, 2]);
+  assert.match((await copiedNote(still)) ?? '', /^2 files copied\b/, 'the history counts the video');
 });
 
 test('stack: picked by its primary, moves whole, re-stacked with the same primary; all archived', async () => {
@@ -260,7 +269,8 @@ test('stack: picked by its primary, moves whole, re-stacked with the same primar
   const annaGrid = (await json<GridItem[]>(`/api/members/${anna.id}/assets`)).body.map((i) => i.fileName);
   assert.ok(!annaGrid.includes('burst-1.jpg'));
   const fam = (await json<GridItem[]>('/api/family/assets')).body.find((i) => i.id === copies[0])!;
-  assert.equal(fam.stack?.size, 3);
+  assert.deepEqual([fam.stack?.size, fam.files], [3, 3]);
+  assert.match((await copiedNote(b1)) ?? '', /^3 files copied\b/);
 });
 
 test('archive and restore report each asset', async () => {
@@ -307,7 +317,7 @@ test('give back: photo, live photo and stack return to the member; family copies
     method: 'POST', headers: await writeHeaders(),
     body: JSON.stringify({ assetIds: [familyIds.photo10, familyIds.still, familyIds.burst[0]] }),
   });
-  assert.deepEqual(res.body, { queued: 3, alreadyQueued: 0 });
+  assert.deepEqual(res.body, { queued: 3, alreadyQueued: 0, queuedIds: [familyIds.photo10, familyIds.still, familyIds.burst[0]] });
   await settled();
 
   for (const id of [photo10, still, ...bursts]) assert.equal((await asset(id)).visibility, 'timeline', id);
