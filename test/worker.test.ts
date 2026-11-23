@@ -381,7 +381,25 @@ test('worker: a drain that throws is not retried on a timer', async () => {
   assert.equal(calls, 1, 'a broken disk waits for the next kick');
 });
 
-test('worker: Check again stays a full check when the timer fired during a run', async () => {
+test('worker: the timer firing during a run adds no check right after it', async () => {
+  const s = setup({});
+  const quick: boolean[] = [];
+  const guard = async (o: { quick: boolean }) => {
+    quick.push(o.quick);
+    await sleep(100); // slower than recheckMs: the timer fires during it
+    return bad;
+  };
+  const wk = createWorker({ ...s.deps, guard, log: silent, recheckMs: 20 });
+  wk.kick(); // pauses
+  await wk.idle();
+  wk.kick(); // a run whose guard outlasts the timer
+  await wk.idle();
+  for (let i = 0; i < 50 && quick.length < 3; i++) await sleep(10);
+  assert.equal(quick[2], true, 'the next check is the timer\'s quick one, not a full one at once');
+  await wk.idle();
+});
+
+test('worker: the timer\'s quick check doesn\'t leak into Check again', async () => {
   const s = setup({});
   let calls = 0;
   // Down for the first 2 checks; then up, but slower than a quick check waits.
