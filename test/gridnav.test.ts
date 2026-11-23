@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { moveFocus } from '../public/gridnav.js';
+import { dayKey, moveFocus, tabStop } from '../public/gridnav.js';
+import { groupByDay } from '../public/selection.js';
 
 // 3 columns. Day 0: 5 photos (rows 0-2, 3-4), with a day button. Day 1: 1 photo, no day button
 // (nothing selectable). Day 2: 7 photos (rows 0-2, 3-5, 6), with a day button.
@@ -65,6 +66,35 @@ test('1 column: ↑ ↓ step 1 photo', () => {
   assert.deepEqual(move(0, 1, 'ArrowDown', 1), { day: 0, at: 2 });
   assert.deepEqual(move(0, 1, 'ArrowUp', 1), { day: 0, at: 0 });
   assert.deepEqual(move(0, 4, 'ArrowDown', 1), { day: 1, at: 0 });
+});
+
+// tabStop: photos a, b (day 1, with a day button), c (day 2).
+const photos = [
+  { id: 'a', day: '2026-07-02' },
+  { id: 'b', day: '2026-07-02' },
+  { id: 'c', day: '2026-07-01' },
+];
+const stopOf = (items: typeof photos, current: string | null, lastIndex: number, heads = ['2026-07-02']) =>
+  tabStop(items, groupByDay(items), new Set([...items.map((i) => i.id), ...heads.map(dayKey)]), current, lastIndex);
+
+test('tabStop: the 1st photo before anything was focused, null for an empty grid', () => {
+  assert.equal(stopOf(photos, null, 0), 'a');
+  assert.equal(stopOf([], null, 0), null);
+});
+
+test('tabStop keeps the photo or day button last focused while it is there', () => {
+  assert.equal(stopOf(photos, 'b', 1), 'b');
+  assert.equal(stopOf(photos, dayKey('2026-07-02'), 0), dayKey('2026-07-02'));
+});
+
+test('tabStop: a photo gone -> the one now at its flat position, else the last one', () => {
+  assert.equal(stopOf(photos.filter((p) => p.id !== 'b'), 'b', 1), 'c');
+  assert.equal(stopOf(photos.filter((p) => p.id !== 'c'), 'c', 2), 'b');
+});
+
+test('tabStop: a day button gone -> that day 1st photo; the whole day gone -> by position', () => {
+  assert.equal(stopOf(photos, dayKey('2026-07-02'), 0, []), 'a');
+  assert.equal(stopOf(photos.slice(2), dayKey('2026-07-02'), 0, []), 'c');
 });
 
 test('Home / End go to the 1st / last photo, also from a day button', () => {

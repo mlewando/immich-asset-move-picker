@@ -7,7 +7,7 @@ import { Component, h } from 'preact';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
 import { media } from './api.js';
-import { moveFocus } from './gridnav.js';
+import { dayKey, moveFocus, tabStop } from './gridnav.js';
 import { CheckCircle, Icon } from './icons.js';
 import { applyMarquee, groupByDay, rectsIntersect } from './selection.js';
 import { Thumb } from './thumb.js';
@@ -204,13 +204,11 @@ function useMarquee(wrapRef, selected, setSelected) {
 }
 
 const NAV_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']);
-const dayKey = (day) => `day:${day}`;
 
 /**
- * The grid's 1 Tab stop (roving tabindex): a photo id or dayKey(day). It follows the focus (a
- * click moves it too). When its photo or day button goes (a job moved it, a reload), the photo
- * at the same flat position takes over, else the last one; and the focus with it, if the focus
- * was in the grid.
+ * The grid's 1 Tab stop (roving tabindex): a photo id or dayKey(day). It follows the focus.
+ * When its photo or day button goes (a job moved it, a reload), tabStop() picks the next one,
+ * and the focus moves with it if it was in the grid.
  */
 function useRovingFocus(wrapRef, groups, items, isSelectable, onSelect, onOpen) {
   const [current, setCurrent] = useState(null);
@@ -231,15 +229,7 @@ function useRovingFocus(wrapRef, groups, items, isSelectable, onSelect, onOpen) 
   }, [groups, isSelectable]);
   const keyOf = (pos) => (pos.at === 'head' ? dayKey(groups[pos.day].day) : groups[pos.day].entries[pos.at].item.id);
 
-  let stop = null;
-  if (items.length) {
-    if (current && where.has(current)) stop = current;
-    else if (current?.startsWith('day:')) {
-      // Its day button went (nothing selectable left): the day's 1st photo, if the day is still there.
-      stop = groups.find((g) => dayKey(g.day) === current)?.entries[0].item.id ?? null;
-    }
-    stop ??= items[Math.min(lastIndex.current, items.length - 1)].id;
-  }
+  const stop = tabStop(items, groups, where, current, lastIndex.current);
 
   const elementOf = (key) => wrapRef.current?.querySelector(`[data-nav="${CSS.escape(key)}"]`);
   const focusKey = (key) => {

@@ -454,8 +454,9 @@ function App() {
   // (a live photo moves with its video, a stack whole).
   const isSelectable = useCallback((item) => (route.kind === 'family' ? !item.noOrigin : true), [route.kind]);
 
-  // A selection emptied by the keyboard (Esc, Clear selection, Move / Give back) takes the top
-  // bar's buttons away: the focus goes to the grid then, after the render, not to the page top.
+  // A selection emptied or started by the keyboard (Esc, Clear selection, Move / Give back,
+  // Ctrl/Cmd+A) swaps the top bar's buttons: the focus goes to the grid then, after the render,
+  // not to the page top.
   const refocus = useRef(false);
   useEffect(() => {
     if (!refocus.current) return;
@@ -607,6 +608,7 @@ function App() {
       } else if (all && !e.target.closest?.('input, textarea, select, [contenteditable]')) {
         // (in a field: the field's own select-all)
         e.preventDefault();
+        refocusIf(true); // the top bar swaps to the selection bar: its zoom buttons go
         setSelected(selectAll(items, isSelectable));
       }
     };

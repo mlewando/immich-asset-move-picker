@@ -17,10 +17,11 @@ export function FilterBar({ albums, filter, onChange }) {
   const active = filter.album || filter.from || filter.to;
   const set = (k) => (e) => onChange({ ...filter, [k]: e.currentTarget.value });
   const fromField = useRef(null);
-  // Clear removes itself: the focus goes to the From day field rather than the page top.
-  const clear = () => {
+  // Clear removes itself: by keyboard (a click with detail 0) the focus goes to the From day
+  // field rather than the page top. Not on a tap: a focused date field may open its picker.
+  const clear = (e) => {
     onChange({ album: '', from: '', to: '' });
-    fromField.current?.focus();
+    if (e.detail === 0) fromField.current?.focus();
   };
   return html`
     <div

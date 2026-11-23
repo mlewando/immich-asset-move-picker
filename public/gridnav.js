@@ -2,6 +2,24 @@
 // The grid is days of photos, each day maybe headed by its "select this day" button; photos fill
 // `cols` columns row by row. The DOM has no rows (CSS auto-fill), so rows are worked out here.
 
+/** The Tab stop's key for a day button (a photo's key is its id). */
+export const dayKey = (day) => `day:${day}`;
+
+/**
+ * The grid's 1 Tab stop, worked out on every render. items: the grid's photos (flat, in order);
+ * groups: groupByDay(items); keys: the keys present now (photo ids, dayKey of each day button);
+ * current: the key last focused (or null); lastIndex: the flat index of the photo last focused.
+ * Keeps current while it is there; its day button gone -> that day's 1st photo; else the photo at
+ * the same flat position, or the last one. Null for an empty grid.
+ */
+export function tabStop(items, groups, keys, current, lastIndex) {
+  if (!items.length) return null;
+  if (current && keys.has(current)) return current;
+  const day = groups.find((g) => dayKey(g.day) === current);
+  if (day) return day.entries[0].item.id;
+  return items[Math.min(lastIndex, items.length - 1)].id;
+}
+
 /**
  * days: [{ count, head }] in grid order (photos in the day, whether it has a day button).
  * pos: { day, at }, at = 'head' (the day button) or the photo's position in its day.
