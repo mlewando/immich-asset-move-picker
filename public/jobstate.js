@@ -56,6 +56,9 @@ export function stateOf(job) {
   return { text: job.step === 'queued' ? 'Queued' : `Queued • ${NEXT[job.kind][job.step] ?? job.step}`, tone: 'idle' };
 }
 
+/** A tile's name for screen readers and the hover title. */
+export const tileLabel = (job) => `${kindLabel(job)} ${job.fileName ?? ''}: ${stateOf(job).text}`;
+
 // A completed step, in the history.
 const DONE_STEP = {
   copied: 'Copied to the family account',

@@ -7,7 +7,7 @@ import htm from 'htm';
 import { api, media } from './api.js';
 import { Icon } from './icons.js';
 import { expiry } from './expiry.js';
-import { ago, eventOf, kindLabel, STEPS, stateOf, time, TONE } from './jobstate.js';
+import { ago, eventOf, kindLabel, STEPS, stateOf, tileLabel, time, TONE } from './jobstate.js';
 import { useLostFocus, useRovingFocus } from './roving.js';
 import { Thumb } from './thumb.js';
 
@@ -61,7 +61,7 @@ const GiveBackMark = () =>
  */
 function Tile({ job, active, isTabStop, onOpen, showState }) {
   const s = job.status === 'done' ? { text: `${job.failures}× failed`, tone: 'warn' } : stateOf(job);
-  const label = `${kindLabel(job)} ${job.fileName ?? ''}: ${s.text}`;
+  const label = tileLabel(job);
   return html`<button
     data-job=${job.id}
     data-nav=${String(job.id)}
