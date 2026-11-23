@@ -10,6 +10,7 @@ import {
   createOidc,
   isLoopback,
   MAX_SESSION_MS,
+  NoEmail,
   ProviderRefused,
   RefreshUnfinished,
   REFRESH_GRACE_MS,
@@ -298,6 +299,15 @@ test('login refused, no logout URL set: the page says to sign out at the provide
   await app.close();
 });
 
+test('login of an account without an email, no logout URL set: the same way on as a refusal', async () => {
+  const { app, login } = await makeApp(fakeOidc({ codeGrant: async () => Promise.reject(new NoEmail('the provider sent no email')) }).oidc);
+  const { cb } = await login();
+  assert.equal(cb.statusCode, 403);
+  assert.match(cb.body, /This account has no email address; the picker needs one\./);
+  assert.deepEqual(linkOf(cb.body), ['/', 'Then log in again']);
+  await app.close();
+});
+
 test('login failed for another reason: "Try again" stays', async () => {
   const boom = fakeOidc({ codeGrant: async () => Promise.reject(new Error('provider down')) }).oidc;
   const { app, login } = await makeApp(boom, baseConfig({ logoutUrl: LOGOUT }));
@@ -533,11 +543,12 @@ test("sign out: with PICKER_OIDC_LOGOUT_URL the browser goes on to the provider'
 // checks, UserInfo and refresh.
 const provider = new OAuth2Server();
 let groups = ['photos-curators'];
+let email: string | null = 'anna@example.org';
 before(async () => {
   await provider.issuer.keys.generate('RS256');
   await provider.start(0, '127.0.0.1');
   provider.service.on('beforeUserinfo', (res: { body: Record<string, unknown> }) => {
-    res.body = { sub: 'johndoe', email: 'anna@example.org', name: 'Anna', groups };
+    res.body = { sub: 'johndoe', ...(email ? { email } : {}), name: 'Anna', groups };
   });
 });
 after(() => provider.stop());
@@ -580,5 +591,19 @@ test('real OIDC flow: a user outside the allowed groups gets 403', async () => {
   groups = ['family'];
   const { app } = await realApp();
   assert.equal((await realLogin(app)).statusCode, 403);
+  await app.close();
+});
+
+test('real OIDC flow: an account without an email is refused for that, with the way to another account', async () => {
+  groups = ['photos-curators'];
+  email = null;
+  const config = baseConfig({ issuer: new URL(provider.issuer.url!), logoutUrl: LOGOUT });
+  const { app } = await makeApp(createOidc(config), config);
+  const cb = await realLogin(app);
+  email = 'anna@example.org';
+  assert.equal(cb.statusCode, 403);
+  assert.match(cb.body, /This account has no email address; the picker needs one\./);
+  assert.equal(linkOf(cb.body)?.[1], 'Log in with another account');
+  assert.doesNotMatch(cb.body, /Try again/);
   await app.close();
 });

@@ -419,6 +419,7 @@ const LOGIN_PAGES: Record<string, () => Notice> = {
   'refused by the provider': () => notices.refused(null, DEV_LOGOUT),
   'refused by the picker (not in an allowed group)': () => notices.refused('outsider@example.test', DEV_LOGOUT),
   'refused, no logout URL set': () => notices.refused('outsider@example.test', null),
+  'account without an email': () => notices.noEmail(DEV_LOGOUT),
 };
 
 // The scenarios: a list, and a switch that starts it afresh and opens the page that shows it.

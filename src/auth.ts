@@ -43,6 +43,8 @@ export type Oidc = {
 
 /** The provider answered, and the answer means no (as opposed to not answering at all). */
 export class ProviderRefused extends Error {}
+/** The provider knows the account but sends no email for it, and the picker names users by email. */
+export class NoEmail extends ProviderRefused {}
 
 /**
  * The refresh grant went through but reading the user didn't. The provider has already rotated
@@ -90,7 +92,7 @@ export function createOidc(cfg: AuthConfig): Oidc {
   // Authelia puts email and groups in UserInfo, not in the ID token.
   const identity = async (c: client.Configuration, tokens: client.TokenEndpointResponse, sub: string): Promise<Grant> => {
     const info = await client.fetchUserInfo(c, tokens.access_token, sub);
-    if (typeof info.email !== 'string' || !info.email) throw new ProviderRefused('the provider sent no email');
+    if (typeof info.email !== 'string' || !info.email) throw new NoEmail('the provider sent no email');
     const groups = Array.isArray(info.groups) ? info.groups.filter((g): g is string => typeof g === 'string') : [];
     const name = typeof info.name === 'string' ? info.name : null;
     return { who: { sub, email: info.email, name, groups }, refreshToken: tokens.refresh_token ?? null };
@@ -387,6 +389,7 @@ export async function registerAuth(app: FastifyInstance, deps: AuthDeps): Promis
       grant = await oidc.codeGrant(new URL(req.url, config.publicUrl), login);
     } catch (err) {
       req.log.warn({ err: (err as Error).message }, 'login failed');
+      if (err instanceof NoEmail) return sendNotice(reply, notices.noEmail(config.logoutUrl));
       return sendNotice(reply, notices.failed(refused(err) ? 403 : 502));
     }
     if (!keeper.allowed(grant.who.groups)) {
@@ -463,19 +466,27 @@ export const notices = {
   signedOut: (): Notice => ({ status: 200, message: 'You are signed out.', link: { href: '/', text: 'Log in again' } }),
   stale: (): Notice => ({ status: 400, message: 'The login took too long or was started elsewhere.', link: { href: '/', text: 'Try again' } }),
   failed: (status: 403 | 502): Notice => ({ status, message: 'The login did not succeed.', link: { href: '/', text: 'Try again' } }),
-  /**
-   * This account is not let in. No "Try again": the provider still knows the account, so a new
-   * login would be refused the same way. The way on is the provider's logout page; without one
-   * the page can only say so.
-   */
   refused: (email: string | null, logoutUrl: URL | null): Notice => ({
     status: 403,
     message: `${email ?? 'This account'} may not use the picker.`,
-    ...(logoutUrl
-      ? { link: { href: logoutUrl.href, text: 'Log in with another account' } }
-      : { hint: 'Sign out at your login provider to use another account.', link: { href: '/', text: 'Then log in again' } }),
+    ...anotherAccount(logoutUrl),
+  }),
+  noEmail: (logoutUrl: URL | null): Notice => ({
+    status: 403,
+    message: 'This account has no email address; the picker needs one.',
+    ...anotherAccount(logoutUrl),
   }),
 };
+
+/**
+ * The way on from an account that is not let in. No "Try again": the provider still knows the
+ * account, so a new login would be refused the same way. The way on is the provider's logout page;
+ * without one the page can only say so.
+ */
+const anotherAccount = (logoutUrl: URL | null): Pick<Notice, 'hint' | 'link'> =>
+  logoutUrl
+    ? { link: { href: logoutUrl.href, text: 'Log in with another account' } }
+    : { hint: 'Sign out at your login provider to use another account.', link: { href: '/', text: 'Then log in again' } };
 
 /**
  * The page loads only what needs no session (OPEN_PATHS, the fonts): anything else would be sent
