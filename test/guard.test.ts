@@ -46,6 +46,19 @@ test('Immich slow to answer: asked once more with a longer timeout before going 
   ]);
 });
 
+test('quick (already read-only): no 2nd, longer try', async () => {
+  const timeouts: (number | undefined)[] = [];
+  const slow = {
+    async getServerVersion(timeoutMs?: number) {
+      timeouts.push(timeoutMs);
+      throw new ImmichError('Immich GET /server/version: no answer in 5 s', 0);
+    },
+  };
+  const r = await checkGuard({ api: slow, db: fakeDb(), quick: true });
+  assert.deepEqual(timeouts, [undefined]);
+  assert.deepEqual(r.problems, ['Immich version check failed: Immich GET /server/version: no answer in 5 s']);
+});
+
 test('renamed column or missing grant → not ok, names the columns', async () => {
   const s = healthySchema();
   s.columns.asset = s.columns.asset!.filter((c) => c !== 'livePhotoVideoId');

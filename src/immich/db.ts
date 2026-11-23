@@ -8,11 +8,18 @@ export type Db = {
   close(): Promise<void>;
 };
 
-export function createDb(cfg: Config['db']): Db {
+/**
+ * `max` connections (default 4). `queryTimeoutMs` fails a query that has no answer by then and
+ * drops its connection; without it a query waits as long as it takes. Postgres cancels such a
+ * query too (statement_timeout), so an abandoned one doesn't keep running there.
+ */
+export function createDb(cfg: Config['db'], { max = 4, queryTimeoutMs }: { max?: number; queryTimeoutMs?: number } = {}): Db {
   const pool = new pg.Pool({
     ...cfg,
-    max: 4,
+    max,
     connectionTimeoutMillis: 5000,
+    query_timeout: queryTimeoutMs,
+    statement_timeout: queryTimeoutMs,
     application_name: 'immich-asset-move-picker',
   });
   // An idle client losing its connection (Postgres restart) must not crash the process.

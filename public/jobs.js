@@ -12,12 +12,14 @@ import { Thumb } from './thumb.js';
 
 const html = htm.bind(h);
 
-// How often the jobs are polled: while some are queued or running, and otherwise.
+// How often the jobs are polled: while some are queued or running or the worker is paused (so
+// the page shows soon that it goes on), and otherwise.
 const POLL_BUSY_MS = 1500;
 const POLL_IDLE_MS = 10_000;
 
 /**
- * Polls GET /api/jobs (POLL_BUSY_MS while jobs are queued or running, else POLL_IDLE_MS).
+ * Polls GET /api/jobs (POLL_BUSY_MS while jobs are queued or running or the worker is paused,
+ * else POLL_IDLE_MS).
  * Calls onDone(n, moves) when n more jobs finished since the last poll, `moves` of them moves
  * (the rest are give backs).
  */
@@ -35,7 +37,7 @@ export function useJobs(onDone) {
     try {
       const s = await api.jobs({ poll: true });
       setSummary(s);
-      active = s.pending + s.running > 0;
+      active = s.pending + s.running > 0 || s.worker.paused;
       if (lastDone.current !== null && s.done > lastDone.current) {
         onDoneRef.current(s.done - lastDone.current, s.movesDone - lastMovesDone.current);
       }
@@ -98,7 +100,16 @@ function JobRows({ section, refreshKey, readOnly, onOpenJob, onRetry }) {
   </ul>`;
 }
 
-export function JobsIndicator({ summary, readOnly, onRetry, onOpenJob, onOpenQueue }) {
+/** "Check again": runs the guard now (shown where the page says it is read-only or paused). */
+export function CheckAgain({ checking, onClick }) {
+  return html`<button
+    class="shrink-0 rounded-full bg-amber-500/20 px-3 py-1 text-xs font-medium text-amber-100 outline-none hover:bg-amber-500/30 focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-60"
+    disabled=${checking}
+    onClick=${onClick}
+  >${checking ? 'Checking…' : 'Check again'}</button>`;
+}
+
+export function JobsIndicator({ summary, readOnly, checking, onCheckAgain, onRetry, onOpenJob, onOpenQueue }) {
   const [open, setOpen] = useState(null); // 'active' | 'failed' | null
   const activeBtn = useRef(null);
   const failedBtn = useRef(null);
@@ -157,7 +168,11 @@ export function JobsIndicator({ summary, readOnly, onRetry, onOpenJob, onOpenQue
       </button>`}
       <${Popover} open=${open === 'active'} onClose=${close} anchor=${activeBtn} label="Jobs in progress" class="sm:right-0 sm:w-[26rem]">
         ${header(paused ? `Paused • ${active} waiting` : `In progress • ${active}`)}
-        ${paused && html`<p class="border-b border-white/5 bg-amber-500/10 px-4 py-2 text-xs text-amber-200">${summary.worker.pausedReason.join(' • ')}</p>`}
+        ${paused &&
+        html`<div class="flex items-center gap-3 border-b border-white/5 bg-amber-500/10 px-4 py-2 text-xs text-amber-200">
+          <p class="min-w-0 flex-1 break-words">${summary.worker.pausedReason.join(' • ')}</p>
+          <${CheckAgain} checking=${checking} onClick=${onCheckAgain} />
+        </div>`}
         <${JobRows} section="active" refreshKey=${summary} readOnly=${readOnly} onOpenJob=${go(onOpenJob)} onRetry=${onRetry} />
       </${Popover}>
       <${Popover} open=${open === 'failed'} onClose=${close} anchor=${failedBtn} label="Failed jobs" class="sm:right-0 sm:w-[26rem]">

@@ -200,6 +200,18 @@ test('retryLater: pending again, not claimed before it is due, attempts counted;
   assert.equal(q.failed()[0]!.attempts, 0);
 });
 
+test('retryNow: retrying jobs due at once, attempts and error kept; others untouched', () => {
+  const q = openQueue(':memory:');
+  q.enqueue('move', ['a', 'b'], { memberId: M });
+  const a = q.claimNext()!;
+  q.retryLater(a.id, 'Immich POST /assets: fetch failed', new Date(Date.now() + 60_000));
+  assert.equal(q.retryNow(), 1);
+  assert.equal(q.retrying(), 0);
+  const again = q.claimNext()!;
+  assert.deepEqual([again.id, again.attempts, again.error], [a.id, 1, 'Immich POST /assets: fetch failed']);
+  assert.equal(q.retryNow(), 0, 'b was never retrying');
+});
+
 test('retry (by the curator): attempts and retry time start afresh', () => {
   const q = openQueue(':memory:');
   q.enqueue('move', ['a'], { memberId: M });

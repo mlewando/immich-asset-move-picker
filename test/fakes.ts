@@ -103,7 +103,15 @@ export function fakeApi(version: ServerVersion | Error = { major: 3, minor: 4, p
 
 export function fakeWorker() {
   let kicks = 0;
-  return { kick: () => void kicks++, state: () => ({ running: false, paused: false, pausedReason: [] as string[] }), kicks: () => kicks };
+  let rechecks = 0;
+  const state = () => ({ running: false, paused: false, pausedReason: [] as string[] });
+  return {
+    kick: () => void kicks++,
+    state,
+    recheck: async () => (rechecks++, state()),
+    kicks: () => kicks,
+    rechecks: () => rechecks,
+  };
 }
 
 /** Healthy server deps (no guard check yet, empty queue), with `over` replacing any of them. */

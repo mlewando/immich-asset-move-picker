@@ -116,6 +116,25 @@ test('status reports read-only mode from the guard', async () => {
   assert.deepEqual((await call({ guard: guardOk }, '/api/status')).json(), { readOnly: false, problems: [], user: null });
 });
 
+test('check again: allowed while read-only, runs the worker\'s check, answers with the fresh status', async () => {
+  const recheck = { method: 'POST', url: '/api/recheck' } as const;
+  let guard: GuardResult = failedGuard;
+  const worker = { ...fakeWorker(), recheck: async () => ((guard = guardOk()), worker.state()) };
+  const res = await call({ guard: () => guard, worker }, recheck);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json(), { readOnly: false, problems: [], busy: false });
+
+  // A step still running when the check passed: the page says moves go on after it.
+  const stuck = { ...fakeWorker(), recheck: async () => ({ running: true, paused: false, pausedReason: [] }) };
+  assert.equal((await call({ guard: guardOk, worker: stuck }, recheck)).json().busy, true);
+
+  const still = fakeWorker();
+  const failed = await call({ guard: () => failedGuard, worker: still }, recheck);
+  assert.deepEqual(failed.json(), { readOnly: true, problems: failedGuard.problems, busy: false });
+  assert.equal(still.rechecks(), 1);
+  assert.equal((await call({}, { ...recheck, headers: { 'csrf-token': 'forged' } })).statusCode, 403);
+});
+
 test('a write needs the CSRF token from GET /api/csrf, with its cookie', async () => {
   const app = await buildApp(serverDeps({ guard: guardOk }));
   const body = { method: 'POST', url: '/api/givebacks', payload: { assetIds: [ASSET] } } as const;

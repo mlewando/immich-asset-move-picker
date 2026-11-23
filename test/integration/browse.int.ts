@@ -9,6 +9,7 @@ import { createImmich, type GridItem, type Member } from '../../src/immich/index
 import { mapImmichPath } from '../../src/immich/paths.ts';
 import { openQueue } from '../../src/queue.ts';
 import { buildApp } from '../../src/server.ts';
+import { fakeWorker } from '../fakes.ts';
 
 const config = loadConfig(process.env);
 const immich = createImmich(config);
@@ -18,7 +19,7 @@ const app = await buildApp({
   immich,
   guard: () => undefined,
   queue,
-  worker: { kick: () => {}, state: () => ({ running: false, paused: false, pausedReason: [] }) },
+  worker: fakeWorker(),
 });
 let base: string;
 const get = async <T>(path: string): Promise<T> => {
@@ -40,6 +41,28 @@ after(async () => {
 });
 
 const byName = (items: GridItem[]) => new Map(items.map((i) => [i.fileName, i]));
+
+test('a hung query times out on a pool with a query timeout, not on one without', async () => {
+  const guardDb = createDb(config.db, { max: 1, queryTimeoutMs: 1000 });
+  try {
+    // Postgres cancels it too, so an abandoned query doesn't keep running there.
+    assert.deepEqual(await guardDb.query('SHOW statement_timeout'), [{ statement_timeout: '1s' }]);
+    const started = Date.now();
+    const [timed, untimed] = await Promise.allSettled([
+      guardDb.query('SELECT pg_sleep(3)'),
+      db.query('SELECT pg_sleep(1.5)'),
+    ]);
+    assert.ok(timed.status === 'rejected' && /timeout/i.test(String(timed.reason)), 'the hung query times out');
+    assert.equal(untimed.status, 'fulfilled', 'a slow query without a timeout finishes');
+    assert.ok(Date.now() - started < 2900, 'the hung query failed before it would have answered');
+    // The connection that timed out is dropped: the next query gets a fresh one and answers.
+    assert.deepEqual(await guardDb.query('SELECT 1 AS one'), [{ one: 1 }]);
+  } finally {
+    await guardDb.close();
+  }
+  // The guard itself (on its own pool) still passes.
+  assert.equal((await immich.check()).ok, true);
+});
 
 test('members: everyone but the family account', async () => {
   const members = await get<Member[]>('/api/members');

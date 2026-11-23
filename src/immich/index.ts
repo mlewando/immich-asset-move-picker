@@ -13,7 +13,7 @@ import type { Album, GridItem, MediaKind, Member, TimelineFilter } from './catal
 import { copyToFamily, sqlCopyDeps, type CopyResult } from './copy.ts';
 import { createDb } from './db.ts';
 import { transient } from './errors.ts';
-import { checkGuard, type GuardResult } from './guard.ts';
+import { checkGuard, GUARD_QUERY_TIMEOUT_MS, type GuardResult } from './guard.ts';
 import { deleteFromFamily, prepareGiveBack, type GiveBackPlan } from './giveback.ts';
 import { linkToFamily, sqlLinkPairs, type LinkResult } from './link.ts';
 import { mapImmichPath } from './paths.ts';
@@ -81,8 +81,11 @@ export type Immich = {
   deleteFromFamily(familyAssetIds: string[]): Promise<void>;
 
   // --- Health
-  /** Upgrade guard: supported Immich version, schema and grants. */
-  check(): Promise<GuardResult>;
+  /**
+   * Upgrade guard: supported Immich version, schema and grants. quick: already read-only, so a
+   * slow Immich isn't given longer to answer (see VERSION_RECHECK_MS).
+   */
+  check(opts?: { quick?: boolean }): Promise<GuardResult>;
   /** Reachability of Immich's database and API: 'ok' or 'error: …'. */
   ping(): Promise<{ db: string; api: string }>;
   close(): Promise<void>;
@@ -95,6 +98,9 @@ export function createImmich(cfg: {
   log?: { error(msg: string): void };
 }): Immich {
   const db = createDb(cfg.db);
+  // The guard's own connection: busy timeline queries can't keep it waiting for one, and a hung
+  // query of its own times out (a slow timeline query on `db` must not).
+  const guardDb = createDb(cfg.db, { max: 1, queryTimeoutMs: GUARD_QUERY_TIMEOUT_MS });
   const api = createImmichApi(cfg.immich.apiUrl, cfg.immich.familyApiKey);
   const log = cfg.log ?? { error: (m: string) => console.error(m) };
 
@@ -155,12 +161,14 @@ export function createImmich(cfg: {
       linkToFamily({ pairs: sqlLinkPairs(db, familyId), localPath: (p) => mapImmichPath(p, cfg.library) }, ids),
     missingThumbnails: async (ids) => missingThumbnails(db, await familyId(), ids),
 
-    check: () => checkGuard({ api, db }),
+    check: (opts) => checkGuard({ api, db: guardDb, quick: opts?.quick }),
     async ping() {
       const [dbState, apiState] = await Promise.all([probe(() => db.query('SELECT 1')), probe(() => api.getServerVersion())]);
       return { db: dbState, api: apiState };
     },
-    close: () => db.close(),
+    close: async () => {
+      await Promise.all([db.close(), guardDb.close()]);
+    },
   };
 }
 

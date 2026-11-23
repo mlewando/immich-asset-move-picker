@@ -67,6 +67,13 @@ _Avoid_: flaky, temporary error
 A job that stopped and waits for the curator's **Retry**: a refusal (e.g. the photo is in the
 trash), or a transient failure that kept failing. Retry starts the automatic retries afresh.
 
+**Paused**:
+No job runs because the picker can't vouch for Immich right now: it does not answer, or its
+version or database is not what the picker was tested with. The picker is read-only at the same
+time (no new Move to family or Give back). Jobs keep their place and go on by themselves once the
+check passes; **Check again** runs the check at once.
+_Avoid_: stopped, down
+
 **Queue page**:
 The picker's page listing every job (failed, in progress, done) with its photo, state and job
 history.

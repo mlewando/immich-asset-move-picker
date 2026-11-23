@@ -150,6 +150,8 @@ type World = {
   queue: Queue;
   paused?: string[];
   guard?: GuardResult;
+  // "Check again" finds Immich back after this many checks that still fail; never when not set.
+  recheckFails?: number;
   pending?: Map<string, number>; // asset id → when its thumbnail is "made" (ms)
   broken?: Set<string>;
 };
@@ -319,16 +321,20 @@ const SCENARIOS: Record<string, { about: string; open: string; build: () => Worl
     },
   },
   paused: {
-    about: 'Worker paused (Immich unreachable), jobs waiting',
+    about: 'Immich unreachable: read-only, worker paused, jobs waiting; the 2nd "Check again" finds it back',
     open: '/queue',
     build() {
       const queue = openQueue(':memory:');
       queue.enqueue('move', bob.slice(0, 5).map((a) => a.id), { memberId: BOB, requestedBy: CURATOR });
-      return { timelines: allPhotos(), albums: true, queue, paused: ['Immich API: fetch failed (ECONNREFUSED)'] };
+      const problems = ['Immich version check failed: Immich GET /server/version: fetch failed (ECONNREFUSED)'];
+      return {
+        timelines: allPhotos(), albums: true, queue, paused: problems, recheckFails: 1,
+        guard: { ok: false, problems, checkedAt: new Date() },
+      };
     },
   },
   'read-only': {
-    about: 'Upgrade guard failed: no Move or Give back',
+    about: 'Upgrade guard failed: no Move or Give back; "Check again" changes nothing',
     open: `/members/${ANNA}`,
     build: () => ({
       timelines: allPhotos(),
@@ -403,6 +409,18 @@ const worker = {
     })().finally(() => (running = false));
   },
   state: () => ({ running, paused: !!world.paused, pausedReason: world.paused ?? [] }),
+  async recheck() {
+    const w = world;
+    await sleep(1_500);
+    if (w === world && w.recheckFails !== undefined && w.recheckFails-- <= 0) {
+      w.paused = undefined;
+      w.guard = undefined;
+      const found = worker.state();
+      worker.kick();
+      return found;
+    }
+    return worker.state();
+  },
 };
 setInterval(() => worker.kick(), 5_000).unref();
 

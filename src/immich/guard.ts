@@ -6,8 +6,13 @@ import type { Db } from './db.ts';
 import { isTransient } from './errors.ts';
 
 // A busy Immich (e.g. its nightly jobs) may not answer in the usual 5 s: before going read-only,
-// ask once more and wait this long.
+// ask once more and wait this long. Not when already read-only (`quick`): then a check is about
+// coming back soon, and a long wait would only delay that.
 export const VERSION_RECHECK_MS = 15_000;
+
+// The guard's database queries are small catalog reads. One with no answer by then (Postgres
+// frozen, connection dead) fails the check instead of holding up every check after it.
+export const GUARD_QUERY_TIMEOUT_MS = 5_000;
 
 // Each version tested on its own (integration tests against it), not a semver range: a later
 // patch of an older minor sorts inside a range like "3.3.5 to 3.4.1" but is untested.
@@ -56,19 +61,20 @@ export async function checkGuard(deps: {
   api: Pick<ImmichApi, 'getServerVersion'>;
   db: Db;
   now?: () => Date;
+  quick?: boolean;
 }): Promise<GuardResult> {
   const problems: string[] = [];
   await Promise.all([
-    checkVersion(deps.api, problems),
+    checkVersion(deps.api, problems, deps.quick ?? false),
     checkSchema(deps.db, problems),
   ]);
   return { ok: problems.length === 0, problems, checkedAt: (deps.now ?? (() => new Date()))() };
 }
 
-async function checkVersion(api: Pick<ImmichApi, 'getServerVersion'>, problems: string[]): Promise<void> {
+async function checkVersion(api: Pick<ImmichApi, 'getServerVersion'>, problems: string[], quick: boolean): Promise<void> {
   try {
     const v = await api.getServerVersion().catch((err: unknown) => {
-      if (!isTransient(err)) throw err;
+      if (quick || !isTransient(err)) throw err;
       return api.getServerVersion(VERSION_RECHECK_MS);
     });
     const actual = `${v.major}.${v.minor}.${v.patch}`;

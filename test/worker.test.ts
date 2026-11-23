@@ -333,6 +333,219 @@ test('worker: a failed guard pauses it, nothing is claimed', async () => {
   assert.deepEqual(wk.state(), { running: false, paused: true, pausedReason: bad.problems });
 });
 
+test('worker: paused, it checks again on its own and goes on once the guard passes', async () => {
+  const s = setup({ a: 'timeline' });
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER });
+  let guard = bad;
+  const logged: string[] = [];
+  const log = { info: (m: string) => void logged.push(m), error: (m: string) => void logged.push(m) };
+  const wk = createWorker({ ...s.deps, guard: async () => guard, log, recheckMs: 20 });
+  wk.kick();
+  await wk.idle();
+  assert.equal(wk.state().paused, true);
+  await sleep(70); // a few checks while still paused
+  assert.deepEqual(logged, [`worker paused: ${bad.problems[0]}`], 'logged once, not at every check');
+  guard = ok;
+  for (let i = 0; i < 50 && s.queue.counts().done === 0; i++) await sleep(10);
+  await wk.idle();
+  assert.equal(s.queue.counts().done, 1, 'no outside kick needed');
+  assert.equal(wk.state().paused, false);
+  assert.deepEqual(logged.slice(1), ['worker resumed', 'move 1 done: a']);
+});
+
+test('worker: only the paused worker\'s own timed checks are quick; a slow Immich resumes on a full one', async () => {
+  const s = setup({});
+  const quick: boolean[] = [];
+  // Down at the 1st check; then up, but answering slower than a quick check waits.
+  const guard = async (o: { quick: boolean }) => {
+    quick.push(o.quick);
+    return quick.length === 1 || o.quick ? bad : ok;
+  };
+  const wk = createWorker({ ...s.deps, guard, log: silent, recheckMs: 20 });
+  wk.kick(); // 1st check (full) finds Immich down: paused
+  await wk.idle();
+  for (let i = 0; i < 50 && quick.length < 3; i++) await sleep(10);
+  assert.deepEqual(quick.slice(0, 3), [false, true, true], 'timed checks while paused are quick');
+  assert.equal(wk.state().paused, true, 'quick checks miss a slow Immich');
+  const state = await wk.recheck(); // Check again: full
+  assert.equal(state.paused, false);
+  assert.equal(quick.at(-1), false);
+  await wk.idle();
+});
+
+test('worker: the next check while paused counts from the start of the last one', async () => {
+  const s = setup({ a: 'timeline' });
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER });
+  let guard = bad;
+  const starts: number[] = [];
+  const slowGuard = async () => {
+    starts.push(Date.now());
+    await sleep(200); // a check that times out
+    return guard;
+  };
+  const wk = createWorker({ ...s.deps, guard: slowGuard, log: silent, recheckMs: 300 });
+  wk.kick();
+  for (let i = 0; i < 100 && starts.length < 2; i++) await sleep(10);
+  guard = ok;
+  assert.ok(starts[1]! - starts[0]! < 450, `2nd check ${starts[1]! - starts[0]!} ms after the 1st began (not 500)`);
+  for (let i = 0; i < 100 && s.queue.counts().done === 0; i++) await sleep(10);
+  await wk.idle();
+});
+
+test('worker: a drain that throws is not retried on a timer', async () => {
+  const s = setup({ a: 'timeline' });
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER });
+  let calls = 0;
+  const guard = async () => {
+    calls++;
+    return ok;
+  };
+  const queue = {
+    ...s.queue,
+    claimNext: () => {
+      throw new Error('SQLITE_IOERR');
+    },
+  };
+  const wk = createWorker({ ...s.deps, queue, guard, log: silent, recheckMs: 20 });
+  wk.kick();
+  await wk.idle();
+  await sleep(100);
+  assert.equal(calls, 1, 'a broken disk waits for the next kick');
+});
+
+test('worker: the timer firing during a run adds no check right after it', async () => {
+  const s = setup({});
+  const quick: boolean[] = [];
+  const guard = async (o: { quick: boolean }) => {
+    quick.push(o.quick);
+    await sleep(100); // slower than recheckMs: the timer fires during it
+    return bad;
+  };
+  const wk = createWorker({ ...s.deps, guard, log: silent, recheckMs: 20 });
+  wk.kick(); // pauses
+  await wk.idle();
+  wk.kick(); // a run whose guard outlasts the timer
+  await wk.idle();
+  for (let i = 0; i < 50 && quick.length < 3; i++) await sleep(10);
+  assert.equal(quick[2], true, 'the next check is the timer\'s quick one, not a full one at once');
+  await wk.idle();
+});
+
+test('worker: the timer\'s quick check doesn\'t leak into Check again', async () => {
+  const s = setup({});
+  let calls = 0;
+  // Down for the first 2 checks; then up, but slower than a quick check waits.
+  const guard = async (o: { quick: boolean }) => {
+    calls++;
+    await sleep(100); // slower than recheckMs: the timer fires during it
+    return calls <= 2 || o.quick ? bad : ok;
+  };
+  const wk = createWorker({ ...s.deps, guard, log: silent, recheckMs: 20 });
+  wk.kick(); // pauses
+  await wk.idle();
+  wk.kick(); // a run whose guard outlasts the timer
+  await sleep(50);
+  const state = await wk.recheck(); // queued behind that run's guard
+  assert.equal(state.paused, false, 'Check again ran full and found Immich up');
+  await wk.idle();
+});
+
+test('worker: Check again says whether a step was still running when it passed', async () => {
+  const s = setup({ a: 'timeline' });
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER });
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const immich = { ...s.immich, copyToFamily: async (id: string) => (await gate, s.immich.copyToFamily(id)) };
+  let up = false;
+  const wk = createWorker({ ...s.deps, immich, guard: async () => (up ? ok : bad), log: silent, recheckMs: 60_000 });
+  wk.kick();
+  await wk.idle(); // paused
+  up = true;
+  assert.equal((await wk.recheck()).running, false, 'idle when the check passed: moves resumed');
+  assert.equal((await wk.recheck()).running, true, 'the copy it started is still stuck');
+  release();
+  await wk.idle();
+});
+
+test('worker: on resume, jobs waiting for an automatic retry are tried at once, attempts kept', async () => {
+  const s = setup({ a: 'timeline' });
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER });
+  s.failNext.copyToFamily = dropped();
+  let guard = ok;
+  const wk = createWorker({ ...s.deps, guard: async () => guard, log: silent, retryDelaysMs: [60_000], recheckMs: 60_000 });
+  wk.kick();
+  await wk.idle();
+  assert.equal(s.queue.retrying(), 1, 'Immich dropped the upload: tried again in 1 min');
+
+  // Still up: a check that passes changes nothing.
+  await wk.recheck();
+  await wk.idle();
+  assert.equal(s.queue.retrying(), 1, 'not due early without a pause');
+
+  guard = bad;
+  await wk.recheck();
+  assert.equal(s.queue.retrying(), 1, 'not while paused');
+  guard = ok;
+  const state = await wk.recheck();
+  assert.equal(state.paused, false);
+  await wk.idle();
+  const [job] = s.queue.list('done').jobs;
+  assert.ok(job, 'done right after the resume');
+  assert.equal(job.failures, 1);
+});
+
+test('worker: Check again on an idle worker that finds it paused keeps checking on its own', async () => {
+  const s = setup({ a: 'timeline' });
+  let guard = bad;
+  const wk = createWorker({ ...s.deps, guard: async () => guard, log: silent, recheckMs: 20 });
+  assert.equal((await wk.recheck()).paused, true);
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER }); // queued earlier, kick lost while paused
+  guard = ok;
+  for (let i = 0; i < 50 && s.queue.counts().done === 0; i++) await sleep(10);
+  await wk.idle();
+  assert.equal(s.queue.counts().done, 1, 'no outside kick needed');
+});
+
+test('worker: guard runs never overlap, so an older failing check cannot undo a newer pass', async () => {
+  const s = setup({});
+  const results = [bad, ok];
+  const delays = [40, 0]; // the 1st (failing) check is the slow one
+  let active = 0;
+  let overlapped = false;
+  const guard = async () => {
+    const i = 2 - results.length;
+    active++;
+    if (active > 1) overlapped = true;
+    await sleep(delays[i]!);
+    active--;
+    return results.shift() ?? ok;
+  };
+  const wk = createWorker({ ...s.deps, guard, log: silent, recheckMs: 60_000 });
+  wk.kick(); // drain's check: slow, fails
+  await sleep(5);
+  const state = await wk.recheck(); // Check again meanwhile: passes
+  await wk.idle();
+  assert.equal(overlapped, false);
+  assert.equal(state.paused, false);
+  assert.equal(wk.state().paused, false, 'the slow failure did not land last');
+});
+
+test('worker: recheck calls made together share 1 guard run', async () => {
+  const s = setup({});
+  let calls = 0;
+  const wk = createWorker({
+    ...s.deps,
+    guard: async () => (calls++, await sleep(10), bad),
+    log: silent,
+    recheckMs: 60_000,
+  });
+  const [a, b] = await Promise.all([wk.recheck(), wk.recheck()]);
+  assert.equal(calls, 1);
+  assert.deepEqual([a.paused, b.paused], [true, true]);
+  await wk.recheck();
+  assert.equal(calls, 2, 'a later call runs its own');
+});
+
 test('worker: a kick during a drain is not lost', async () => {
   const s = setup({ a: 'timeline', b: 'timeline' });
   s.queue.enqueue('move', ['a'], { memberId: MEMBER });
@@ -411,6 +624,32 @@ test('thumbnails: a long wait is fine while other moves get theirs; no progress 
   await checkThumbnails(s.deps, { now: Date.now() + THUMBNAIL_STALL_MS + 1000 });
   assert.match(row(s.queue)!.error!, /no thumbnails for 30 min/);
   assert.equal(row(s.queue)!.step, 'linked');
+});
+
+test('thumbnails: time before `since` (a pause, the picker not running) is not counted as a stall', async () => {
+  const s = setup({ a: 'timeline' });
+  await waitingMoves(s, ['a']);
+  const now = Date.now() + THUMBNAIL_STALL_MS + 60_000; // waited 31 min, but Immich was down for 30 of them
+  await checkThumbnails(s.deps, { now, since: now - 60_000 });
+  assert.equal(row(s.queue), null);
+  assert.deepEqual(s.queue.waiting().map((j) => j.sourceAssetId), ['a']);
+  await checkThumbnails(s.deps, { now, since: now - THUMBNAIL_STALL_MS - 1000 });
+  assert.match(row(s.queue)!.error!, /no thumbnails for 30 min/, 'a stall after the resume still fails');
+});
+
+test('worker: its start counts as a resume for the stall clock', async () => {
+  const s = setup({ a: 'timeline' });
+  await waitingMoves(s, ['a']);
+  const realNow = Date.now;
+  Date.now = () => realNow() + THUMBNAIL_STALL_MS + 1000; // the picker was off past the stall time
+  try {
+    const wk = createWorker({ ...s.deps, guard: async () => ok, log: silent, waitCheckMs: 0 });
+    wk.kick();
+    await wk.idle();
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal(row(s.queue), null, 'still waiting, not failed');
 });
 
 test('thumbnails: Retry after a stall checks again without redoing the move', async () => {
