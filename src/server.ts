@@ -197,7 +197,8 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
   );
   app.get<{ Params: { file: keyof typeof FONTS } }>(
     '/fonts/:file',
-    { schema: { params: { type: 'object', properties: { file: { type: 'string', enum: Object.keys(FONTS) } } } } },
+    // No login needed: the pages shown without one (signed out, login refused) use the font too.
+    { config: { public: true }, schema: { params: { type: 'object', properties: { file: { type: 'string', enum: Object.keys(FONTS) } } } } },
     (req, reply) => {
       const path = FONTS[req.params.file];
       return reply.sendFile(basename(path), dirname(path), { maxAge: '30d', cacheControl: true });

@@ -7,9 +7,9 @@
 // - every REFRESH_MS a refresh-token grant re-reads the user from the provider, so a disabled
 //   user or one removed from the allowed groups is out within that time. A provider that can't be
 //   reached is retried for REFRESH_GRACE_MS, then the session ends too.
-// Background requests (/api/, /media/) without a session get 401, never a login redirect: a grid
-// of hundreds of tiles must not start hundreds of logins. The page reloads once and that 1
-// navigation logs in (public/expiry.js).
+// Background requests (/api/, /media/, and anything a browser marks as not a document) without a
+// session get 401, never a login redirect: a grid of hundreds of tiles must not start hundreds of
+// logins. The page reloads once and that 1 navigation logs in (public/expiry.js).
 import { isIP } from 'node:net';
 import fastifySession from '@fastify/session';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -43,6 +43,8 @@ export type Oidc = {
 
 /** The provider answered, and the answer means no (as opposed to not answering at all). */
 export class ProviderRefused extends Error {}
+/** The provider knows the account but sends no email for it, and the picker names users by email. */
+export class NoEmail extends ProviderRefused {}
 
 /**
  * The refresh grant went through but reading the user didn't. The provider has already rotated
@@ -90,7 +92,7 @@ export function createOidc(cfg: AuthConfig): Oidc {
   // Authelia puts email and groups in UserInfo, not in the ID token.
   const identity = async (c: client.Configuration, tokens: client.TokenEndpointResponse, sub: string): Promise<Grant> => {
     const info = await client.fetchUserInfo(c, tokens.access_token, sub);
-    if (typeof info.email !== 'string' || !info.email) throw new ProviderRefused('the provider sent no email');
+    if (typeof info.email !== 'string' || !info.email) throw new NoEmail('the provider sent no email');
     const groups = Array.isArray(info.groups) ? info.groups.filter((g): g is string => typeof g === 'string') : [];
     const name = typeof info.name === 'string' ? info.name : null;
     return { who: { sub, email: info.email, name, groups }, refreshToken: tokens.refresh_token ?? null };
@@ -244,6 +246,12 @@ function credentialKeeper({ config, oidc, credentials, log }: { config: AuthConf
   };
 }
 
+// Served without a session, because the pages shown without one (signed out, login refused) load
+// them: the icon and the stylesheet, which hold nothing private. The static file server has no
+// per-file setting for this, hence the list. The other 3 are icons browsers ask for on their own;
+// they don't exist (404), and must not start a login either.
+const OPEN_PATHS = new Set(['/favicon.svg', '/app.css', '/favicon.ico', '/apple-touch-icon.png', '/apple-touch-icon-precomposed.png']);
+
 // openid-client's random state: base64url. Checked before it becomes part of a cookie name.
 const STATE = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -319,14 +327,18 @@ export async function registerAuth(app: FastifyInstance, deps: AuthDeps): Promis
   };
 
   app.addHook('onRequest', async (req, reply) => {
-    if (req.routeOptions.config.public) return;
+    const path = req.url.split('?')[0]!;
+    if (req.routeOptions.config.public || OPEN_PATHS.has(path)) return;
     req.user = await loggedIn(req, reply);
     if (req.user) return;
     // Only a page load goes to the login. Background requests (fetch, <img>, <video>) and writes
     // get 401: a grid of hundreds of tiles must not start hundreds of logins, and a write can't
     // be replayed after one anyway. The page reloads once instead (public/expiry.js).
-    const path = req.url.split('?')[0]!;
-    const pageLoad = isSafeMethod(req.method) && !path.startsWith('/api/') && !path.startsWith('/media/');
+    // Browsers say what a request is for (Sec-Fetch-Dest): anything but a document is a
+    // background request whatever its path. Without the header (old browsers, curl) the path decides.
+    const dest = req.headers['sec-fetch-dest'];
+    const pageLoad =
+      isSafeMethod(req.method) && !path.startsWith('/api/') && !path.startsWith('/media/') && (dest === undefined || dest === 'document');
     if (!pageLoad) return reply.code(401).send({ error: 'not logged in' });
     return reply.redirect(`/oauth2/start?rd=${encodeURIComponent(req.url)}`);
   });
@@ -356,29 +368,39 @@ export async function registerAuth(app: FastifyInstance, deps: AuthDeps): Promis
     return reply.redirect(url.href);
   });
 
-  app.get<{ Querystring: { state?: string } }>('/oauth2/callback', { config: { public: true } }, async (req, reply) => {
+  app.get<{ Querystring: { state?: string; error?: string } }>('/oauth2/callback', { config: { public: true } }, async (req, reply) => {
     const state = req.query.state ?? '';
     const signed = STATE.test(state) ? req.cookies[loginCookie(state)] : undefined;
     const login = signed ? openLogin(signed) : null;
     if (signed) reply.clearCookie(loginCookie(state), cookieOpts);
-    if (!login || login.state !== state || Date.now() - login.at > LOGIN_TTL_MS) return errorPage(reply, 400, 'The login took too long or was started elsewhere.');
+    if (!login || login.state !== state || Date.now() - login.at > LOGIN_TTL_MS) return sendNotice(reply, notices.stale());
+
+    // The provider itself refused the account (e.g. Authelia's policy for this client). Read from
+    // the answer's own parameter, not from what openid-client throws: it checks other parameters
+    // first and would then report a refusal as a plain failure. The state above ties this answer
+    // to a login this browser started.
+    if (req.query.error === 'access_denied') {
+      req.log.info('login refused by the provider');
+      return sendNotice(reply, notices.refused(null, config.logoutUrl));
+    }
 
     let grant: Grant;
     try {
       grant = await oidc.codeGrant(new URL(req.url, config.publicUrl), login);
     } catch (err) {
       req.log.warn({ err: (err as Error).message }, 'login failed');
-      return errorPage(reply, refused(err) ? 403 : 502, 'The login did not succeed.');
+      if (err instanceof NoEmail) return sendNotice(reply, notices.noEmail(config.logoutUrl));
+      return sendNotice(reply, notices.failed(refused(err) ? 403 : 502));
     }
     if (!keeper.allowed(grant.who.groups)) {
       req.log.info({ user: grant.who.email }, 'login refused: not in an allowed group');
-      return errorPage(reply, 403, `${grant.who.email} may not use the picker.`);
+      return sendNotice(reply, notices.refused(grant.who.email, config.logoutUrl));
     }
     // Without a refresh token the session could never re-check the user: refuse rather than
     // trust them until they go idle.
     if (!grant.refreshToken) {
       req.log.error('login refused: the provider sent no refresh token (is offline_access granted?)');
-      return errorPage(reply, 502, 'The login did not succeed.');
+      return sendNotice(reply, notices.failed(502));
     }
     // A login over a live one in the same browser: that login's token is revoked and its refresh
     // state dropped (regenerate keeps the session's store key, so its credentials row is reused).
@@ -413,9 +435,7 @@ export async function registerAuth(app: FastifyInstance, deps: AuthDeps): Promis
   });
 
   // A page, not a redirect to the login: going back to / would log straight back in.
-  app.get('/signed-out', { config: { public: true } }, async (_req, reply) =>
-    page(reply, 200, 'You are signed out.', 'Log in again'),
-  );
+  app.get('/signed-out', { config: { public: true } }, async (_req, reply) => sendNotice(reply, notices.signedOut()));
 
   const prune = setInterval(() => {
     sessions.store.prune();
@@ -438,13 +458,56 @@ export function safeReturn(returnTo: string | undefined, publicUrl: URL): string
   return u && u.origin === publicUrl.origin ? u.href : home;
 }
 
-function page(reply: FastifyReply, status: number, message: string, link: string) {
+/** A page shown instead of the app: what happened, and the 1 way on from here. */
+export type Notice = { status: number; message: string; hint?: string; link: { href: string; text: string } };
+
+/** Every page the login shows outside the app (the dev UI previews the same ones). */
+export const notices = {
+  signedOut: (): Notice => ({ status: 200, message: 'You are signed out.', link: { href: '/', text: 'Log in again' } }),
+  stale: (): Notice => ({ status: 400, message: 'The login took too long or was started elsewhere.', link: { href: '/', text: 'Try again' } }),
+  failed: (status: 403 | 502): Notice => ({ status, message: 'The login did not succeed.', link: { href: '/', text: 'Try again' } }),
+  refused: (email: string | null, logoutUrl: URL | null): Notice => ({
+    status: 403,
+    message: `${email ?? 'This account'} may not use the picker.`,
+    ...anotherAccount(logoutUrl),
+  }),
+  noEmail: (logoutUrl: URL | null): Notice => ({
+    status: 403,
+    message: 'This account has no email address; the picker needs one.',
+    ...anotherAccount(logoutUrl),
+  }),
+};
+
+/**
+ * The way on from an account that is not let in. No "Try again": the provider still knows the
+ * account, so a new login would be refused the same way. The way on is the provider's logout page;
+ * without one the page can only say so.
+ */
+const anotherAccount = (logoutUrl: URL | null): Pick<Notice, 'hint' | 'link'> =>
+  logoutUrl
+    ? { link: { href: logoutUrl.href, text: 'Log in with another account' } }
+    : { hint: 'Sign out at your login provider to use another account.', link: { href: '/', text: 'Then log in again' } };
+
+/**
+ * The page loads only what needs no session (OPEN_PATHS, the fonts): anything else would be sent
+ * to the login, and start one behind the back of someone who just signed out. Its look comes from
+ * the .notice classes in styles/app.css.
+ */
+export function sendNotice(reply: FastifyReply, { status, message, hint, link }: Notice) {
   return reply
     .code(status)
     .type('text/html; charset=utf-8')
-    .send(`<!doctype html><title>Photo picker</title><p>${escapeHtml(message)} <a href="/">${link}</a></p>`);
+    .send(
+      '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
+        '<meta name="viewport" content="width=device-width, initial-scale=1"><title>Family photo picker</title>' +
+        '<link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/app.css"></head>' +
+        '<body><main class="notice"><img class="notice-icon" src="/favicon.svg" alt="">' +
+        '<h1 class="notice-title">Family photo picker</h1>' +
+        `<p class="notice-text">${escapeHtml(message)}</p>` +
+        (hint ? `<p class="notice-hint">${escapeHtml(hint)}</p>` : '') +
+        `<a class="notice-link" href="${escapeHtml(link.href)}">${escapeHtml(link.text)}</a></main></body></html>`,
+    );
 }
-const errorPage = (reply: FastifyReply, status: number, message: string) => page(reply, status, message, 'Try again');
 
 const escapeHtml = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);

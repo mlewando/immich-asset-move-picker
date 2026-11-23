@@ -52,7 +52,9 @@ photos on the timeline.
   provider stays unreachable for 30 minutes past that, the session ends too. Sign out (in the
   sidebar) ends the session and revokes its refresh token; the provider's own session ends only if
   `PICKER_OIDC_LOGOUT_URL` sends the browser to its logout page, else the next visit logs
-  straight back in.
+  straight back in. A login refused because the account may not use the picker says so and
+  offers another account through the same logout page; without `PICKER_OIDC_LOGOUT_URL` it can
+  only tell the user to sign out at the provider.
 
 ## Running
 ```sh
