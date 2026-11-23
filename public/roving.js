@@ -63,10 +63,18 @@ export function useRovingFocus(wrapRef, groups, items, hasHead, onActivate) {
     const pos = where.get(el.dataset.nav);
     if (pos) lastIndex.current = pos.index;
   };
-  // Only a move to somewhere else counts as leaving: removing the focused button fires focusout
-  // with no relatedTarget, and the focus must then follow to the next one.
+  // Removing the focused button (a job moved its photo) fires focusout with no relatedTarget
+  // before it detaches: that doesn't count as leaving, the focus must follow to the next one. A
+  // click on the empty page (also no relatedTarget) leaves the button in place, and does count.
   const onFocusOut = (e) => {
-    if (e.relatedTarget && !wrapRef.current?.contains(e.relatedTarget)) focusInside.current = false;
+    if (e.relatedTarget) {
+      if (!wrapRef.current?.contains(e.relatedTarget)) focusInside.current = false;
+    } else {
+      const el = e.target;
+      queueMicrotask(() => {
+        if (el.isConnected) focusInside.current = false;
+      });
+    }
   };
 
   const onKeyDown = (e) => {

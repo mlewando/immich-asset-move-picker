@@ -8,6 +8,7 @@ import { api, media } from './api.js';
 import { Icon } from './icons.js';
 import { expiry } from './expiry.js';
 import { ago, eventOf, kindLabel, STEPS, stateOf, time, TONE } from './jobstate.js';
+import { holdInert } from './inert.js';
 import { useRovingFocus } from './roving.js';
 import { Thumb } from './thumb.js';
 
@@ -19,7 +20,7 @@ const WIDE = '(min-width: 64rem)'; // Tailwind's lg: from here the panel sits be
 
 // What the full-screen panel covers (marked data-behind-panel): inert while it is open, so
 // neither Tab nor a screen reader's swipe leaves the panel.
-const setBehindInert = (on) => document.querySelectorAll('[data-behind-panel]').forEach((el) => el.toggleAttribute('inert', on));
+const setBehindInert = (on) => holdInert('job-panel', on ? document.querySelectorAll('[data-behind-panel]') : null);
 
 /**
  * 1 section, loaded page by page. Reloads every page shown so far whenever `refreshKey` changes
@@ -105,7 +106,7 @@ function TileGrid({ id, label, jobs, jobId, tileSize, onOpen, showState }) {
     onKeyDown=${nav.onKeyDown}
     onKeyUp=${nav.onKeyUp}
   >
-    <p id=${`${id}-keys`} class="sr-only">Arrow keys move, Enter opens.</p>
+    <p id=${`${id}-keys`} class="sr-only">Arrow keys move, Enter or Space opens.</p>
     ${jobs.map(
       (j) => html`<${Tile} key=${j.id} job=${j} active=${j.id === jobId} isTabStop=${nav.stop === String(j.id)} onOpen=${onOpen} showState=${showState} />`,
     )}

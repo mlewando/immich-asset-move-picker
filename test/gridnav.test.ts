@@ -46,7 +46,7 @@ test('↓ from a last row goes to the next day button', () => {
   assert.deepEqual(move(1, 0, 'ArrowDown'), { day: 2, at: 'head' });
 });
 
-test('↑ from a day button lands in the previous day last row, 1st column', () => {
+test("↑ from a day button lands in the previous day's last row, 1st column", () => {
   assert.deepEqual(move(2, 'head', 'ArrowUp'), { day: 1, at: 0 });
   assert.deepEqual(moveFocus([{ count: 5, head: true }, { count: 2, head: true }], 3, { day: 1, at: 'head' }, 'ArrowUp'), { day: 0, at: 3 });
   assert.deepEqual(move(0, 'head', 'ArrowUp'), { day: 0, at: 'head' }, 'nothing above the 1st day');
@@ -97,7 +97,7 @@ test('tabStop: a photo gone -> the one now at its flat position, else the last o
   assert.equal(stopOf(photos.filter((p) => p.id !== 'c'), 'c', 2), 'b');
 });
 
-test('tabStop: a day button gone -> that day 1st photo; the whole day gone -> by position', () => {
+test("tabStop: a day button gone -> that day's 1st photo; the whole day gone -> by position", () => {
   assert.equal(stopOf(photos, dayKey('2026-07-02'), 0, []), 'a');
   assert.equal(stopOf(photos.slice(2), dayKey('2026-07-02'), 0, []), 'c');
 });

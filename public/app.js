@@ -10,6 +10,7 @@ import { Icon } from './icons.js';
 import { keepAlive } from './expiry.js';
 import { JobsIndicator, StorageTemplateReminder, useJobs } from './jobs.js';
 import { QueuePage } from './queue.js';
+import { holdInert } from './inert.js';
 import { focusNav } from './roving.js';
 import { addRange, fileCount, selectAll, toggleDay, toggleOne } from './selection.js';
 import { startMember } from './start.js';
@@ -584,15 +585,14 @@ function App() {
   // focus back to the Menu button. From md up it is not shown, so it closes there.
   useEffect(() => {
     if (!drawerOpen) return;
-    const behind = document.querySelectorAll('[data-behind-panel], #main');
-    behind.forEach((el) => el.toggleAttribute('inert', true));
+    holdInert('menu', document.querySelectorAll('[data-behind-panel], #main'));
     const wide = matchMedia('(min-width: 48rem)');
     const onWide = () => wide.matches && setDrawerOpen(false);
     wide.addEventListener('change', onWide);
     return () => {
       wide.removeEventListener('change', onWide);
-      behind.forEach((el) => el.toggleAttribute('inert', false));
-      document.querySelector('[data-menu-button]')?.focus();
+      holdInert('menu', null);
+      if (!wide.matches) document.querySelector('[data-menu-button]')?.focus(); // hidden from md up
     };
   }, [drawerOpen]);
 
