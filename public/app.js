@@ -316,7 +316,7 @@ function ReadOnlyBanner({ problems, checking, onCheckAgain }) {
   return html`<div class="border-b border-amber-500/20 bg-amber-500/10 px-4 py-2 text-sm text-amber-200" role="alert">
     <div class="flex items-center gap-2">
       <${Icon} name="alert" class="size-4 shrink-0" />
-      <span class="min-w-0 flex-1 truncate"><strong class="font-semibold">Read-only.</strong> Moving is switched off for now.</span>
+      <span class="min-w-0 flex-1 truncate"><strong class="font-semibold">Read-only.</strong><span class="hidden sm:inline"> Moving is switched off for now.</span></span>
       <button
         class="shrink-0 rounded-full px-3 py-1 text-xs font-medium text-amber-100 outline-none hover:bg-amber-500/20 focus-visible:ring-2 focus-visible:ring-sky-400"
         aria-expanded=${open}
