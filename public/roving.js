@@ -71,8 +71,9 @@ export function useRovingFocus(wrapRef, groups, items, hasHead, onActivate) {
       if (!wrapRef.current?.contains(e.relatedTarget)) focusInside.current = false;
     } else {
       const el = e.target;
+      // Leaving the browser window also has no relatedTarget: the focus is still on the button.
       queueMicrotask(() => {
-        if (el.isConnected) focusInside.current = false;
+        if (el.isConnected && document.hasFocus()) focusInside.current = false;
       });
     }
   };

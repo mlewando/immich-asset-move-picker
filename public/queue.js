@@ -95,6 +95,18 @@ function TileGrid({ id, label, jobs, jobId, tileSize, onOpen, showState }) {
   // The section is 1 group (the hook takes days) with no header button.
   const groups = useMemo(() => [{ day: id, entries: items.map((item, index) => ({ item, index })) }], [id, items]);
   const nav = useRovingFocus(wrap, groups, items, noHeads, ({ item }) => onOpen(item.job.id));
+  // The section's last job left (e.g. in progress -> done) and "Nothing queued." replaces the
+  // tiles: a focused tile goes with them (focusout with no relatedTarget, then the grid is gone),
+  // so the focus goes to the section's own button rather than the page top.
+  const onFocusOut = (e) => {
+    nav.onFocusOut(e);
+    if (e.relatedTarget) return;
+    const grid = e.currentTarget; // not wrap.current: the ref is already cleared while it unmounts
+    const sectionButton = grid?.closest('section')?.querySelector('button[aria-controls]');
+    queueMicrotask(() => {
+      if (!grid?.isConnected && document.activeElement === document.body) sectionButton?.focus();
+    });
+  };
   return html`<div
     ref=${wrap}
     role="group"
@@ -103,7 +115,7 @@ function TileGrid({ id, label, jobs, jobId, tileSize, onOpen, showState }) {
     class="nav-grid grid grid-cols-[repeat(auto-fill,minmax(min(var(--tile),30vw),1fr))] gap-1"
     style=${{ '--tile': `${tileSize}px` }}
     onFocusIn=${nav.onFocusIn}
-    onFocusOut=${nav.onFocusOut}
+    onFocusOut=${onFocusOut}
     onKeyDown=${nav.onKeyDown}
     onKeyUp=${nav.onKeyUp}
   >
