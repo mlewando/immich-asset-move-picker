@@ -1,6 +1,7 @@
-// Arrow-key moves in the timeline grid (pure, no DOM), unit-tested in test/gridnav.test.ts.
-// The grid is days of photos, each day maybe headed by its "select this day" button; photos fill
-// `cols` columns row by row. The DOM has no rows (CSS auto-fill), so rows are worked out here.
+// Arrow-key moves in a grid of buttons: the timeline, the Queue's job tiles (pure, no DOM),
+// unit-tested in test/gridnav.test.ts. The timeline is days of photos, each day maybe headed by
+// its "select this day" button (a Queue section is 1 day without one); items fill `cols` columns
+// row by row. The DOM has no rows (CSS auto-fill), so rows are worked out here.
 
 /** The Tab stop's key for a day button (a photo's key is its id). */
 export const dayKey = (day) => `day:${day}`;

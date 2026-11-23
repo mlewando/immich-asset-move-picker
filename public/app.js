@@ -253,7 +253,7 @@ function Sidebar(props) {
     </aside>
     <dialog
       ref=${drawer}
-      class="fixed inset-y-0 left-0 m-0 h-dvh max-h-none w-72 max-w-[85vw] border-0 bg-neutral-900 p-0 text-neutral-100 shadow-2xl backdrop:bg-black/60 motion-safe:animate-drawer-in md:hidden"
+      class="fixed inset-y-0 left-0 m-0 h-dvh max-h-none w-72 max-w-[85vw] border-0 bg-neutral-900 p-0 text-neutral-100 shadow-2xl backdrop:bg-black/60 motion-safe:animate-drawer-in motion-safe:backdrop:animate-fade-in md:hidden"
       aria-label="Menu"
       onClose=${onCloseDrawer}
       onClick=${(e) => e.target === e.currentTarget && onCloseDrawer()}

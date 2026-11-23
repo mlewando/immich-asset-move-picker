@@ -331,7 +331,15 @@ function Detail({ job, closing, memberName, readOnly, onRetry, onClose }) {
       class=${`fixed inset-0 z-40 m-0 size-full max-h-none max-w-none flex-col border-0 bg-neutral-900 p-0 text-neutral-100 shadow-2xl backdrop:bg-transparent open:flex lg:left-auto lg:right-0 lg:z-30 lg:w-[28rem] lg:border-l lg:border-white/5 ${closing ? 'motion-safe:animate-panel-out' : 'motion-safe:animate-panel-in'}`}
       aria-labelledby="job-detail-title"
       inert=${closing}
-      onCancel=${(e) => e.preventDefault()}
+      onCancel=${(e) => {
+        // A close request (Esc, Android's Back): close the app's way, so the URL and page follow.
+        e.preventDefault();
+        if (!closing) onClose();
+      }}
+      onClose=${(e) => {
+        // Closed by the browser anyway (a 2nd close request can't be refused): the same.
+        if (!e.currentTarget.open && !closing) onClose();
+      }}
     >
       <div class="flex h-14 shrink-0 items-center gap-2 border-b border-white/5 pl-5 pr-2">
         <h2 id="job-detail-title" ref=${heading} tabindex="-1" class="min-w-0 flex-1 truncate text-[15px] font-semibold outline-none">
