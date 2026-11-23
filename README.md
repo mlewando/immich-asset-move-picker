@@ -18,8 +18,8 @@ Storage Template Migration meanwhile) is tried again after 1, 5 and 15 min (at o
 comes back after being unreachable) before the job waits for **Retry**. While Immich can't be
 reached the picker is read-only and its jobs are paused: once paused it checks every 10 s and goes
 on by itself once Immich answers, or at once with **Check again**. The **Queue** page shows every
-job with its photo, state and history: each step, wait, failure and retry. A photo whose exact bytes the family account already has is not copied
-again, and its history says so.
+job with its photo, state and history: each step, wait, failure and retry. A photo whose exact
+bytes the family account already has is not copied again, and its history says so.
 
 The picker opens on the member last viewed in the browser; the 1st time, on the 1st member with
 photos on the timeline.

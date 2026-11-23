@@ -98,11 +98,10 @@ const app = await buildApp(
 if (!config.auth) app.log.warn('PICKER_AUTH=off: no login, every request is let in');
 
 await app.listen({ host: config.listen.host, port: config.listen.port });
-void runGuard()
-  .catch((err: Error) => app.log.error(`guard check failed: ${err.message}`))
-  .finally(publishMetrics);
 
-// Resume whatever a previous run left unfinished (its recorded step says where).
+// Resume whatever a previous run left unfinished (its recorded step says where). The worker's
+// 1st run is also the start's guard check: a 2nd one beside it could land late and overwrite a
+// newer result.
 const resumed = queue.resetRunning();
 if (resumed) app.log.info(`${resumed} interrupted move(s) back to pending`);
 worker.kick();
