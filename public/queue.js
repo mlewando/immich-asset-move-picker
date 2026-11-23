@@ -300,11 +300,35 @@ function Detail({ job, closing, memberName, readOnly, onRetry, toast, onClose })
     else d.showModal();
     heading.current?.focus({ preventScroll: true });
   }, [wide]);
-  // Gone (after sliding out): the focus goes back to the job's tile, for keyboard users. Leaving
-  // the page already took the dialog out (and with it the page's inertness): no close() here.
-  const jobId = useRef(job.id);
-  jobId.current = job.id;
-  useEffect(() => () => document.querySelector(`[data-job="${jobId.current}"]`)?.focus({ preventScroll: true }), []);
+  // Where the job's tile was when it opened: its section and place there.
+  const origin = useRef(null);
+  useEffect(() => {
+    const tile = document.querySelector(`[data-job="${job.id}"]`);
+    const section = tile?.closest('section');
+    origin.current = { id: job.id, section, index: section ? [...section.querySelectorAll('[data-job]')].indexOf(tile) : -1 };
+  }, [job.id]);
+  // Gone (after sliding out): the focus goes back to the job's tile, for keyboard users. If the
+  // job left that section meanwhile (it finished, a retry moved it), to the tile now at its place
+  // (else the section's last), as when a focused tile goes; the section's button if none is left
+  // or the section is closed. Leaving the page already took the dialog out (and with it the
+  // page's inertness): no close() here, and the focus stays where leaving put it.
+  useEffect(
+    () => () => {
+      const active = document.activeElement;
+      if (active && active !== document.body) return;
+      const { id, section, index } = origin.current;
+      const tile = document.querySelector(`[data-job="${id}"]`);
+      let target = tile;
+      if (section?.isConnected && !section.contains(tile)) {
+        const left = section.querySelectorAll('[data-job]');
+        target = left[Math.min(index, left.length - 1)];
+      }
+      if (target?.closest('[hidden]')) target = null;
+      target ??= (section?.isConnected ? section : tile?.closest('section'))?.querySelector('button[aria-controls]') ?? document.getElementById('main');
+      target?.focus({ preventScroll: true });
+    },
+    [],
+  );
   // Esc closes through onClose (it slides out and updates the URL), not the dialog's own Esc.
   useEffect(() => {
     if (closing) return;
