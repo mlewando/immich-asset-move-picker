@@ -351,30 +351,28 @@ test('worker: the next check while paused counts from the start of the last one'
     await sleep(200); // a check that times out
     return guard;
   };
-  const wk = createWorker({ ...s.deps, guard: slowGuard, log: silent, recheckMs: 100 });
+  const wk = createWorker({ ...s.deps, guard: slowGuard, log: silent, recheckMs: 300 });
   wk.kick();
   for (let i = 0; i < 100 && starts.length < 2; i++) await sleep(10);
   guard = ok;
-  assert.ok(starts[1]! - starts[0]! < 250, `2nd check ${starts[1]! - starts[0]!} ms after the 1st began (not 300)`);
+  assert.ok(starts[1]! - starts[0]! < 450, `2nd check ${starts[1]! - starts[0]!} ms after the 1st began (not 500)`);
   for (let i = 0; i < 100 && s.queue.counts().done === 0; i++) await sleep(10);
   await wk.idle();
 });
 
-test('worker: a stopped drain (DB gone) is checked again on its own', async () => {
+test('worker: a drain that throws waits for the next kick, not the paused worker\'s timer', async () => {
   const s = setup({ a: 'timeline' });
   s.queue.enqueue('move', ['a'], { memberId: MEMBER });
-  let down = true;
+  let calls = 0;
   const guard = async () => {
-    if (down) throw new Error('Connection terminated unexpectedly');
-    return ok;
+    calls++;
+    throw new Error('SQLITE_IOERR');
   };
   const wk = createWorker({ ...s.deps, guard, log: silent, recheckMs: 20 });
   wk.kick();
   await wk.idle();
-  down = false;
-  for (let i = 0; i < 50 && s.queue.counts().done === 0; i++) await sleep(10);
-  await wk.idle();
-  assert.equal(s.queue.counts().done, 1);
+  await sleep(100);
+  assert.equal(calls, 1, 'a broken disk is not retried every recheckMs');
 });
 
 test('worker: on resume, jobs waiting for an automatic retry are tried at once, attempts kept', async () => {

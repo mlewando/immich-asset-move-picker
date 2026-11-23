@@ -206,16 +206,11 @@ export function createWorker(
   let again = false;
   let paused = false;
   let pausedReason: string[] = [];
-  // The last drain threw (DB or Immich gone between the guard and a job): checked again like a pause.
-  let stopped = false;
   let checking: Promise<WorkerState> | null = null;
   let wakeTimer: NodeJS.Timeout | undefined;
   let lastCheck = 0;
   // When the latest guard run started: a paused worker checks again recheckMs after that.
   let guardStartedAt = 0;
-  // The next check is the paused worker's own timed one: quick. Any other (Check again, the
-  // periodic kick) gives a slow Immich its full time, so a busy one doesn't keep it paused.
-  let timedCheck = false;
   // Since when the worker has been watching Immich: its own start, or the end of the last pause.
   let resumedAt = Date.now();
 
@@ -224,12 +219,12 @@ export function createWorker(
   // 1 guard run at a time, each after the one before: a slow check that fails (begun before
   // Immich came back) never lands after a newer one that passed and pauses the worker again.
   let guardChain: Promise<unknown> = Promise.resolve();
-  const runGuard = (): Promise<GuardResult> => {
+  // quick only for the paused worker's own timed check. Any other (Check again, the periodic
+  // kick) gives a slow Immich its full time, so a busy one doesn't keep the worker paused.
+  const runGuard = (quick = false): Promise<GuardResult> => {
     const run = guardChain.then(() => {
       guardStartedAt = Date.now();
-      const quick = paused && timedCheck;
-      timedCheck = false;
-      return deps.guard({ quick });
+      return deps.guard({ quick: quick && paused });
     });
     guardChain = run.catch(() => {});
     return run;
@@ -252,9 +247,9 @@ export function createWorker(
     return guard.ok;
   };
 
-  const drain = async (): Promise<void> => {
-    for (;;) {
-      if (!applyGuard(await runGuard())) return;
+  const drain = async (quick: boolean): Promise<void> => {
+    for (let first = true; ; first = false) {
+      if (!applyGuard(await runGuard(quick && first))) return;
       // Also between jobs: a long batch of copies doesn't hold back the moves already copied.
       if (Date.now() - lastCheck >= waitCheckMs) {
         lastCheck = Date.now();
@@ -287,7 +282,8 @@ export function createWorker(
     }
   };
 
-  const kick = (): void => {
+  // quick: started by the paused worker's own timer.
+  const start = (quick: boolean): void => {
     if (running) {
       again = true; // something new arrived meanwhile: look at the queue once more after
       return;
@@ -295,14 +291,13 @@ export function createWorker(
     running = (async () => {
       do {
         again = false;
-        stopped = false;
         try {
-          await drain();
+          await drain(quick);
         } catch (err) {
-          // DB or Immich unreachable: stay idle; the next kick (or the timed one) retries.
-          stopped = true;
+          // DB or Immich unreachable: stay idle; the next kick (or the periodic one) retries.
           deps.log.error(`worker stopped: ${(err as Error).message}`);
         }
+        quick = false;
       } while (again);
     })().finally(() => {
       running = null;
@@ -310,19 +305,17 @@ export function createWorker(
       deps.onChange?.();
     });
   };
+  const kick = (): void => start(false);
 
   // While moves wait for thumbnails, come back for the next check; while jobs wait to be tried
-  // again, come back when the first is due. A paused or stopped worker comes back to check
-  // whether it can go on.
+  // again, come back when the first is due. A paused worker comes back to check whether it can
+  // go on.
   const scheduleWake = (): void => {
     clearTimeout(wakeTimer);
-    if (paused || stopped) {
+    if (paused) {
       // Counted from the start of the last check, so a slow failing one doesn't add its own time.
-      const timed = () => {
-        timedCheck = true;
-        kick();
-      };
-      wakeTimer = setTimeout(timed, Math.max(0, recheckMs - (Date.now() - guardStartedAt))).unref();
+      const wait = Math.max(0, recheckMs - (Date.now() - guardStartedAt));
+      wakeTimer = setTimeout(() => start(true), wait).unref();
       return;
     }
     const delays: number[] = [];
