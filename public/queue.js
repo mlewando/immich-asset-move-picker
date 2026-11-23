@@ -2,18 +2,20 @@
 // sections (failed, in progress, done), and per job a side panel with its steps and history: each
 // step, wait, failure and retry.
 import { h } from 'preact';
-import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
 import { api, media } from './api.js';
 import { Icon } from './icons.js';
 import { expiry } from './expiry.js';
 import { ago, eventOf, kindLabel, STEPS, stateOf, time, TONE } from './jobstate.js';
+import { useLostFocus, useRovingFocus } from './roving.js';
 import { Thumb } from './thumb.js';
 
 const html = htm.bind(h);
 
 const focusRing = 'outline-none focus-visible:ring-2 focus-visible:ring-sky-400';
 const PANEL_MS = 120; // the side panel's slide out (animate-panel-out in styles/app.css)
+const WIDE = '(min-width: 64rem)'; // Tailwind's lg: from here the panel sits beside the page
 
 /**
  * 1 section, loaded page by page. Reloads every page shown so far whenever `refreshKey` changes
@@ -57,12 +59,14 @@ const GiveBackMark = () =>
  * A photo tile. Its section already says failed / in progress / done, so a tile only adds what
  * differs: the step in progress, or that a done job failed on the way.
  */
-function Tile({ job, active, onOpen, showState }) {
+function Tile({ job, active, isTabStop, onOpen, showState }) {
   const s = job.status === 'done' ? { text: `${job.failures}× failed`, tone: 'warn' } : stateOf(job);
   const label = `${kindLabel(job)} ${job.fileName ?? ''}: ${s.text}`;
   return html`<button
     data-job=${job.id}
-    class="photo-ring group relative aspect-square overflow-hidden bg-neutral-800"
+    data-nav=${String(job.id)}
+    tabindex=${isTabStop ? 0 : -1}
+    class="photo-ring group relative aspect-square scroll-mt-14 overflow-hidden bg-neutral-800"
     aria-current=${active ? 'true' : undefined}
     onClick=${() => onOpen(job.id)}
     aria-label=${label}
@@ -75,6 +79,34 @@ function Tile({ job, active, onOpen, showState }) {
       <span class=${`max-w-full truncate rounded-full bg-black/65 px-2 py-0.5 text-[11px] font-medium backdrop-blur-sm ${s.tone === 'warn' ? 'text-amber-200' : s.tone === 'busy' ? 'text-sky-200' : 'text-neutral-200'}`}>${s.text}</span>
     </span>`}
   </button>`;
+}
+
+const noHeads = () => false;
+
+/** A section's job tiles: 1 Tab stop, arrows move, Enter or Space opens the job (public/roving.js). */
+function TileGrid({ id, label, jobs, jobId, tileSize, onOpen, showState }) {
+  const wrap = useRef(null);
+  const items = useMemo(() => jobs.map((job) => ({ id: String(job.id), job })), [jobs]);
+  // The section is 1 group (the hook takes days) with no header button.
+  const groups = useMemo(() => [{ day: id, entries: items.map((item, index) => ({ item, index })) }], [id, items]);
+  const nav = useRovingFocus(wrap, groups, items, noHeads, ({ item }) => onOpen(item.job.id));
+  return html`<div
+    ref=${wrap}
+    role="group"
+    aria-label=${label}
+    aria-describedby=${`${id}-keys`}
+    class="nav-grid grid grid-cols-[repeat(auto-fill,minmax(min(var(--tile),30vw),1fr))] gap-1"
+    style=${{ '--tile': `${tileSize}px` }}
+    onFocusIn=${nav.onFocusIn}
+    onClick=${nav.onClick}
+    onKeyDown=${nav.onKeyDown}
+    onKeyUp=${nav.onKeyUp}
+  >
+    <p id=${`${id}-keys`} class="sr-only">Arrow keys move, Enter or Space opens.</p>
+    ${jobs.map(
+      (j) => html`<${Tile} key=${j.id} job=${j} active=${j.id === jobId} isTabStop=${nav.stop === String(j.id)} onOpen=${onOpen} showState=${showState} />`,
+    )}
+  </div>`;
 }
 
 /** A failed job: its reason matters more than its photo, so a card with both and Retry. */
@@ -130,12 +162,17 @@ function Section({ id, title, count, open, onToggle, extra, data, empty, childre
   </section>`;
 }
 
-/** Full-screen photo; click or Esc closes it. */
+/**
+ * Full-screen photo; click or Esc closes it. It sits inside the job panel's <dialog>: outside a
+ * modal one it would be inert.
+ */
 function Enlarged({ job, onClose }) {
   useEffect(() => {
     const onKey = (e) => {
       if (e.key !== 'Escape') return;
-      e.stopPropagation(); // only this, not the side panel too
+      // Only this, not the side panel too (nor, as a modal dialog, its own Esc).
+      e.stopPropagation();
+      e.preventDefault();
       onClose();
     };
     addEventListener('keydown', onKey, true);
@@ -222,7 +259,7 @@ function History({ events }) {
 }
 
 /** closing: sliding out (it unmounts after PANEL_MS); the page already takes its room back. */
-function Detail({ job, closing, memberName, readOnly, onRetry, onClose }) {
+function Detail({ job, closing, memberName, readOnly, onRetry, toast, onClose }) {
   const [events, setEvents] = useState(null);
   const [enlarged, setEnlarged] = useState(false);
   const heading = useRef(null);
@@ -245,9 +282,64 @@ function Detail({ job, closing, memberName, readOnly, onRetry, onClose }) {
     document.documentElement.classList.add('max-lg:overflow-hidden');
     return () => document.documentElement.classList.remove('max-lg:overflow-hidden');
   }, []);
+  // A <dialog>: below lg it covers the page as a modal one (the browser makes the page behind
+  // inert and keeps Tab inside); from lg it is a side panel beside the page, not modal. Resizing
+  // across lg reopens it the other way.
+  const dialog = useRef(null);
+  const [wide, setWide] = useState(() => matchMedia(WIDE).matches);
+  useEffect(() => {
+    const mq = matchMedia(WIDE);
+    const update = () => setWide(mq.matches);
+    mq.addEventListener('change', update);
+    return () => mq.removeEventListener('change', update);
+  }, []);
+  useEffect(() => {
+    const d = dialog.current;
+    if (d.open) d.close();
+    if (wide) d.show();
+    else d.showModal();
+    heading.current?.focus({ preventScroll: true });
+  }, [wide]);
+  // Where the job's tile is: its section and place there, kept as they were once it left them.
+  const origin = useRef(null);
+  useEffect(() => {
+    const tile = document.querySelector(`[data-job="${job.id}"]`);
+    const o = origin.current;
+    if (o?.id === job.id && o.section && !o.section.contains(tile)) return;
+    const section = tile?.closest('section');
+    origin.current = { id: job.id, section, index: section ? [...section.querySelectorAll('[data-job]')].indexOf(tile) : -1 };
+  });
+  // Gone (after sliding out): the focus goes back to the job's tile, for keyboard users. If the
+  // job left that section meanwhile (it finished, a retry moved it), to the tile now at its place
+  // (else the section's last), as when a focused tile goes; the section's button if none is left
+  // or the section is closed. Leaving the page already took the dialog out (and with it the
+  // page's inertness): no close() here, and the focus stays where leaving put it.
+  useEffect(
+    () => () => {
+      const active = document.activeElement;
+      if (active && active !== document.body) return;
+      const { id, section, index } = origin.current;
+      if (section && !section.isConnected) return; // the page changed
+      const tile = document.querySelector(`[data-job="${id}"]`);
+      let target = tile;
+      if (section && !section.contains(tile)) {
+        const left = section.querySelectorAll('[data-job]');
+        target = left[Math.min(index, left.length - 1)];
+      }
+      if (target?.closest('[hidden]')) target = null;
+      target ??= (section ?? tile?.closest('section'))?.querySelector('button[aria-controls]');
+      target?.focus({ preventScroll: true });
+    },
+    [],
+  );
+  // Esc closes through onClose (it slides out and updates the URL), not the dialog's own Esc.
   useEffect(() => {
     if (closing) return;
-    const onKey = (e) => e.key === 'Escape' && onClose();
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      onClose();
+    };
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
   }, [onClose, closing]);
@@ -256,11 +348,23 @@ function Detail({ job, closing, memberName, readOnly, onRetry, onClose }) {
   const fact = (label, value) =>
     value && html`<div class="min-w-0"><dt class="text-[11px] uppercase tracking-wider text-neutral-500">${label}</dt><dd class="truncate text-sm" title=${value}>${value}</dd></div>`;
   return html`
-    <aside
+    <dialog
+      ref=${dialog}
       data-panel=${closing ? undefined : ''}
-      class=${`fixed inset-0 z-40 flex flex-col bg-neutral-900 shadow-2xl lg:inset-y-0 lg:left-auto lg:right-0 lg:z-30 lg:w-[28rem] lg:border-l lg:border-white/5 ${closing ? 'motion-safe:animate-panel-out' : 'motion-safe:animate-panel-in'}`}
+      class=${`fixed inset-0 z-40 m-0 size-full max-h-none max-w-none flex-col border-0 bg-neutral-900 p-0 text-neutral-100 shadow-2xl backdrop:bg-transparent open:flex lg:left-auto lg:right-0 lg:z-30 lg:w-[28rem] lg:border-l lg:border-white/5 ${closing ? 'motion-safe:animate-panel-out' : 'motion-safe:animate-panel-in'}`}
       aria-labelledby="job-detail-title"
       inert=${closing}
+      onCancel=${(e) => {
+        // A close request (Esc, Android's Back): close the app's way, so the URL and page follow.
+        e.preventDefault();
+        if (!closing) onClose();
+      }}
+      onClose=${(e) => {
+        // Closed by the browser anyway (a 2nd close request can't be refused): the same. Not
+        // once it left the page (its listener outlives it): that is no request to close.
+        const d = e.currentTarget;
+        if (d.isConnected && !d.open && !closing) onClose();
+      }}
     >
       <div class="flex h-14 shrink-0 items-center gap-2 border-b border-white/5 pl-5 pr-2">
         <h2 id="job-detail-title" ref=${heading} tabindex="-1" class="min-w-0 flex-1 truncate text-[15px] font-semibold outline-none">
@@ -306,12 +410,13 @@ function Detail({ job, closing, memberName, readOnly, onRetry, onClose }) {
           onClick=${() => onRetry(job.id)}
         ><${Icon} name="refresh" class="size-4" />Retry</button>
       </div>`}
-    </aside>
-    ${enlarged && html`<${Enlarged} job=${job} onClose=${() => setEnlarged(false)} />`}`;
+      ${enlarged && html`<${Enlarged} job=${job} onClose=${() => setEnlarged(false)} />`}
+      ${!wide && toast}
+    </dialog>`;
 }
 
 /** jobId: the job shown in the side panel (from the URL); onSelectJob(id | null) changes it. */
-export function QueuePage({ summary, members, tileSize, readOnly, onRetry, jobId, onSelectJob }) {
+export function QueuePage({ summary, members, tileSize, readOnly, onRetry, toast, jobId, onSelectJob }) {
   const [onlyFailures, setOnlyFailures] = useState(false);
   // Done is the long one, and rarely what you come for: closed until asked.
   const [open, setOpen] = useState({ failed: true, active: true, done: false });
@@ -344,17 +449,14 @@ export function QueuePage({ summary, members, tileSize, readOnly, onRetry, jobId
     }, PANEL_MS);
     return () => clearTimeout(t);
   }, [jobId]);
-  const close = useCallback(() => {
-    const id = jobId;
-    onSelectJob(null);
-    // Back to the tile it was opened from, for keyboard users.
-    setTimeout(() => document.querySelector(`[data-job="${id}"]`)?.focus({ preventScroll: true }));
-  }, [jobId, onSelectJob]);
+  const close = useCallback(() => onSelectJob(null), [onSelectJob]);
+  // A section's last job left while its tile had the focus (e.g. in progress -> done: "Nothing
+  // queued." replaces the tiles): the focus goes to the section's own button.
+  const onFocusIn = useLostFocus(({ section }) => section?.querySelector('button[aria-controls]')?.focus());
 
   const memberName = (id) => members.find((m) => m.id === id)?.name ?? null;
-  const tiles = (jobs, showState) => html`<div class="grid grid-cols-[repeat(auto-fill,minmax(min(var(--tile),30vw),1fr))] gap-1" style=${{ '--tile': `${tileSize}px` }}>
-    ${jobs.map((j) => html`<${Tile} key=${j.id} job=${j} active=${j.id === jobId} onOpen=${onSelectJob} showState=${showState} />`)}
-  </div>`;
+  const tiles = (id, label, jobs, showState) =>
+    html`<${TileGrid} id=${id} label=${label} jobs=${jobs} jobId=${jobId} tileSize=${tileSize} onOpen=${onSelectJob} showState=${showState} />`;
 
   // Nothing ever queued (or all of it pruned): 1 message rather than 3 empty sections.
   if (summary && !summary.failed.length && !summary.pending && !summary.running && !summary.done) {
@@ -366,7 +468,7 @@ export function QueuePage({ summary, members, tileSize, readOnly, onRetry, jobId
   }
 
   return html`
-    <div class="pb-8">
+    <div class="pb-8" onFocusIn=${onFocusIn}>
       <${Section} id="failed" title="Failed" count=${summary?.failed.length} open=${open.failed} onToggle=${toggle('failed')} data=${failed} empty="Nothing failed.">
         <div class="grid grid-cols-[repeat(auto-fill,minmax(min(24rem,100%),1fr))] gap-2">
           ${failed.jobs?.map(
@@ -382,7 +484,7 @@ export function QueuePage({ summary, members, tileSize, readOnly, onRetry, jobId
         onToggle=${toggle('active')}
         data=${active}
         empty="Nothing queued."
-      >${active.jobs && tiles(active.jobs, () => true)}</${Section}>
+      >${active.jobs && tiles('active-jobs', 'Jobs in progress', active.jobs, () => true)}</${Section}>
       <${Section}
         id="done"
         title="Done"
@@ -395,8 +497,8 @@ export function QueuePage({ summary, members, tileSize, readOnly, onRetry, jobId
           <input type="checkbox" class="size-4 accent-sky-500" checked=${onlyFailures} onChange=${(e) => setOnlyFailures(e.currentTarget.checked)} />
           Only with failures
         </label>`}
-      >${done.jobs && tiles(done.jobs, (j) => j.failures > 0)}</${Section}>
+      >${done.jobs && tiles('done-jobs', 'Done jobs', done.jobs, (j) => j.failures > 0)}</${Section}>
     </div>
     ${selected &&
-    html`<${Detail} job=${selected} closing=${closing} memberName=${memberName(selected.memberId)} readOnly=${readOnly} onRetry=${onRetry} onClose=${close} />`}`;
+    html`<${Detail} job=${selected} closing=${closing} memberName=${memberName(selected.memberId)} readOnly=${readOnly} onRetry=${onRetry} toast=${toast} onClose=${close} />`}`;
 }

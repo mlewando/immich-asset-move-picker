@@ -10,7 +10,8 @@ import { Icon } from './icons.js';
 import { keepAlive } from './expiry.js';
 import { CheckAgain, JobsIndicator, StorageTemplateReminder, useJobs } from './jobs.js';
 import { QueuePage } from './queue.js';
-import { addRange, fileCount, toggleDay, toggleOne } from './selection.js';
+import { focusNav } from './roving.js';
+import { addRange, fileCount, selectAll, toggleDay, toggleOne } from './selection.js';
 import { startMember } from './start.js';
 import { Viewer } from './viewer.js';
 
@@ -169,14 +170,16 @@ function SidebarBody({ members, route, user, jobs, collapsed, onNavigate, onTogg
     html`<div class=${`flex h-9 items-end px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-neutral-500 transition-opacity ${collapsed ? 'opacity-0' : ''}`} aria-hidden=${collapsed}>${text}</div>`;
   const count = (n, tone, title) =>
     n > 0 &&
-    html`<span class=${`shrink-0 rounded-full px-2 text-xs ${tone === 'bad' ? 'bg-rose-500/20 text-rose-200' : 'bg-sky-500/20 text-sky-200'}`} title=${title}>${n}</span>`;
+    html`<span class=${`shrink-0 rounded-full px-2 text-xs ${tone === 'bad' ? 'bg-rose-500/20 text-rose-200' : 'bg-sky-500/20 text-sky-200'}`} title=${title}>${n}<span class="sr-only"> ${title.toLowerCase()}</span></span>`;
+  // Collapsed, the link is read by its label alone, so the label carries the counts.
+  const queueLabel = ['Queue', failed > 0 && `${failed} failed`, active > 0 && `${active} in progress`].filter(Boolean).join(', ');
   return html`
     <nav class="min-h-0 flex-1 overflow-y-auto overflow-x-hidden" aria-label="Members and pages">
       ${label('Members')}
       <div class="space-y-0.5">
         ${members.map(
           (m) => html`<${NavItem} href=${`/members/${m.id}`} active=${route.kind === 'member' && route.id === m.id} label=${m.name} collapsed=${collapsed} onNavigate=${onNavigate}>
-            <span class=${`grid size-8 shrink-0 place-items-center rounded-full text-sm font-semibold text-white ${avatarColor(m.id)}`}>
+            <span class=${`grid size-8 shrink-0 place-items-center rounded-full text-sm font-semibold text-white ${avatarColor(m.id)}`} aria-hidden="true">
               ${(m.name || m.email).slice(0, 1).toUpperCase()}
             </span>
             <span class="min-w-0">
@@ -192,7 +195,7 @@ function SidebarBody({ members, route, user, jobs, collapsed, onNavigate, onTogg
           <span class="grid size-8 shrink-0 place-items-center rounded-full bg-neutral-700 text-neutral-200"><${Icon} name="family" class="size-4" /></span>
           <span class="min-w-0 truncate font-medium">Family account</span>
         </${NavItem}>
-        <${NavItem} href="/queue" active=${route.kind === 'queue'} label="Queue" collapsed=${collapsed} onNavigate=${onNavigate}>
+        <${NavItem} href="/queue" active=${route.kind === 'queue'} label=${queueLabel} collapsed=${collapsed} onNavigate=${onNavigate}>
           <span class="relative grid size-8 shrink-0 place-items-center rounded-full bg-neutral-700 text-neutral-200">
             <${Icon} name="queue" class="size-4" />
             ${collapsed && failed > 0 && html`<span class="absolute right-0 top-0 size-2.5 rounded-full bg-rose-400 ring-2 ring-neutral-950" title=${`${failed} failed`} />`}
@@ -224,15 +227,18 @@ const Logo = () => html`<div class="flex h-14 shrink-0 items-center gap-3 px-3">
 </div>`;
 
 function Sidebar(props) {
-  const { collapsed, drawerOpen, onCloseDrawer, onToggle } = props;
-  // The drawer (phone): Esc or a tap beside it closes it.
+  const { collapsed, drawer, onToggle } = props;
+  // The drawer (phone) is a modal <dialog> that owns its open state (the Menu button opens it):
+  // the browser makes the page behind inert, keeps Tab inside, closes it on Esc and gives the
+  // focus back to the Menu button. A tap beside it closes it too; from md up it isn't shown, so
+  // it closes there (hidden, it would still leave the page inert).
+  const closeDrawer = () => drawer.current?.close();
   useEffect(() => {
-    if (!drawerOpen) return;
-    const onKey = (e) => e.key === 'Escape' && onCloseDrawer();
-    addEventListener('keydown', onKey);
-    document.querySelector('#drawer a, #drawer button')?.focus();
-    return () => removeEventListener('keydown', onKey);
-  }, [drawerOpen]);
+    const wide = matchMedia('(min-width: 48rem)'); // Tailwind's md
+    const onWide = () => wide.matches && closeDrawer();
+    wide.addEventListener('change', onWide);
+    return () => wide.removeEventListener('change', onWide);
+  }, []);
   return html`
     <aside
       class=${`sticky top-0 hidden h-dvh shrink-0 flex-col overflow-hidden whitespace-nowrap border-r border-white/5 bg-neutral-900/60 px-2 pb-2 transition-[width] duration-200 md:flex ${collapsed ? 'w-[4.5rem]' : 'w-64'}`}
@@ -240,17 +246,20 @@ function Sidebar(props) {
       <${Logo} />
       <${SidebarBody} ...${props} collapsed=${collapsed} onToggle=${onToggle} />
     </aside>
-    ${drawerOpen &&
-    html`<div class="fixed inset-0 z-50 md:hidden">
-      <div class="absolute inset-0 bg-black/60 motion-safe:animate-fade-in" onClick=${onCloseDrawer} />
-      <aside id="drawer" class="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col whitespace-nowrap bg-neutral-900 px-2 pb-2 shadow-2xl motion-safe:animate-drawer-in" role="dialog" aria-modal="true" aria-label="Menu">
+    <dialog
+      ref=${drawer}
+      class="fixed inset-y-0 left-0 m-0 h-dvh max-h-none w-72 max-w-[85vw] border-0 bg-neutral-900 p-0 text-neutral-100 shadow-2xl backdrop:bg-black/60 motion-safe:animate-drawer-in motion-safe:backdrop:animate-fade-in md:hidden"
+      aria-label="Menu"
+      onClick=${(e) => e.target === e.currentTarget && closeDrawer()}
+    >
+      <div class="flex h-full flex-col whitespace-nowrap px-2 pb-2">
         <div class="flex items-center">
           <div class="min-w-0 flex-1"><${Logo} /></div>
-          <button class=${`mr-1 grid size-9 place-items-center rounded-full text-neutral-300 hover:bg-white/10 ${focusRing}`} onClick=${onCloseDrawer} aria-label="Close menu"><${Icon} name="close" /></button>
+          <button class=${`mr-1 grid size-9 place-items-center rounded-full text-neutral-300 hover:bg-white/10 ${focusRing}`} onClick=${closeDrawer} aria-label="Close menu"><${Icon} name="close" /></button>
         </div>
-        <${SidebarBody} ...${props} collapsed=${false} onNavigate=${onCloseDrawer} onToggle=${null} />
-      </aside>
-    </div>`}`;
+        <${SidebarBody} ...${props} collapsed=${false} onNavigate=${closeDrawer} onToggle=${null} />
+      </div>
+    </dialog>`;
 }
 
 // --- top bar: menu, title + zoom, or the selection actions -----------------------------------
@@ -260,12 +269,14 @@ function TopBar({ title, count, selectedCount, selectedFiles, action, tileSize, 
   if (selectedCount > 0) {
     return html`
       <header class=${`${bar} bg-sky-950`}>
+        <h1 class="sr-only">${title}</h1>
         <button class=${iconBtn} onClick=${onClear} aria-label="Clear selection" title="Clear selection"><${Icon} name="close" /></button>
         <span class="flex-1 truncate text-sm font-medium">${selectedCount} selected${selectedFiles > selectedCount ? ` • ${selectedFiles} files` : ''}</span>
         ${jobs}
         <button
-          class=${`shrink-0 rounded-full bg-sky-500 px-4 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-sky-400 disabled:opacity-40 disabled:hover:bg-sky-500 ${focusRing}`}
+          class=${`shrink-0 rounded-full bg-sky-500 px-4 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-sky-400 disabled:opacity-40 disabled:hover:bg-sky-500 aria-disabled:opacity-40 aria-disabled:hover:bg-sky-500 ${focusRing}`}
           disabled=${action.disabled}
+          aria-disabled=${action.tooMany ? 'true' : undefined}
           title=${action.title}
           onClick=${action.run}
         >${action.label}</button>
@@ -275,7 +286,7 @@ function TopBar({ title, count, selectedCount, selectedFiles, action, tileSize, 
     <header class=${`${bar} bg-neutral-950`}>
       <button class=${`${iconBtn} md:hidden`} onClick=${onMenu} aria-label="Menu" title="Menu"><${Icon} name="menu" /></button>
       <div class="min-w-16 flex-1 truncate">
-        <span class="text-base font-semibold">${title}</span>
+        <h1 class="inline text-base font-semibold">${title}</h1>
         ${count !== null && html`<span class="ml-2 hidden text-sm text-neutral-500 @2xl:inline">${count} items</span>`}
         ${count !== null && html`<span class="hidden text-sm text-neutral-500 @5xl:inline"> • drag to select, Alt+drag to unselect</span>`}
       </div>
@@ -358,6 +369,20 @@ function useToast() {
 }
 
 const LAST_MEMBER_KEY = 'picker.lastMember';
+const MAX_PER_REQUEST = 10_000; // the server's maxItems for a Move / Give back (src/server.ts)
+const TOO_MANY = `Up to ${MAX_PER_REQUEST} photos at a time`;
+const APP_NAME = 'Family picker';
+
+/** The grid's Tab stop (its current photo or day button), else the page's content. */
+function focusPhotos() {
+  const el = document.querySelector('[data-photos] [data-nav][tabindex="0"]');
+  if (el) focusNav(el);
+  else document.getElementById('main')?.focus({ preventScroll: true });
+}
+
+// Whether the focus is about to be lost: it is on the top bar, whose buttons change with the
+// selection. (Not when it is nowhere: a mouse user's page must not jump to the grid.)
+const focusOnTopBar = () => !!document.activeElement?.closest('header');
 
 function App() {
   const route = useRoute();
@@ -425,8 +450,33 @@ function App() {
   // (a live photo moves with its video, a stack whole).
   const isSelectable = useCallback((item) => (route.kind === 'family' ? !item.noOrigin : true), [route.kind]);
 
+  // A selection emptied or started by the keyboard (Esc, Clear selection, Move / Give back,
+  // Ctrl/Cmd+A) swaps the top bar's buttons: the focus goes to the grid then, after the render,
+  // not to the page top.
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (!refocus.current) return;
+    refocus.current = false;
+    focusPhotos();
+  });
+  const refocusIf = (byKeyboard) => {
+    if (byKeyboard && focusOnTopBar()) refocus.current = true;
+  };
+  const clearSelection = useCallback((byKeyboard) => {
+    refocusIf(byKeyboard);
+    anchor.current = null;
+    setSelected(new Set());
+  }, []);
+
   const readOnly = status?.readOnly ?? true;
-  const runSelected = useCallback(async () => {
+  const tooMany = selected.size > MAX_PER_REQUEST;
+  const runSelected = useCallback(async (e) => {
+    if (tooMany) {
+      setToast({ kind: 'warn', text: TOO_MANY });
+      return;
+    }
+    // A click made with the keyboard has detail 0.
+    const byKeyboard = e?.detail === 0;
     const ids = [...selected];
     // Give back deletes family copies (each has an original that goes back first): ask once.
     const ask = `Give back ${ids.length} photo${ids.length === 1 ? '' : 's'}? The originals return to the members' timelines and these family copies are deleted.`;
@@ -434,6 +484,7 @@ function App() {
     try {
       const r = route.kind === 'family' ? await api.giveBack(ids) : await api.move(route.id, ids);
       // Queued now or already: either way each has an unfinished job, so it leaves the grid.
+      refocusIf(byKeyboard);
       drop(ids);
       // What can't be moved shows up as failed in the jobs indicator (the worker decides).
       // The files of what this click queued, when more than its photos (live photos, stacks).
@@ -445,15 +496,18 @@ function App() {
     } catch (e) {
       setToast({ kind: 'error', text: e.message });
     }
-  }, [selected, items, route.kind, route.id, refreshJobs, drop]);
+  }, [selected, items, tooMany, route.kind, route.id, refreshJobs, drop]);
   const action = {
     label: route.kind === 'family' ? 'Give back' : 'Move to family',
     disabled: readOnly,
+    tooMany,
     title: readOnly
       ? 'Read-only: the upgrade guard failed'
-      : route.kind === 'family'
-        ? 'Put the originals back on the members’ timelines and delete these family copies'
-        : 'Copy to the family account and archive the originals',
+      : tooMany
+        ? TOO_MANY
+        : route.kind === 'family'
+          ? 'Put the originals back on the members’ timelines and delete these family copies'
+          : 'Copy to the family account and archive the originals',
     run: runSelected,
   };
   // The worker paused or went on (the jobs poll saw it): the read-only banner follows at once,
@@ -524,8 +578,9 @@ function App() {
     },
     [items, viewerIndex, gridKey],
   );
-  // The viewer closed (Esc, its button, the browser's Back): the focus goes to the magnifier of
-  // the photo last shown, so the keyboard carries on from there, not from the photo first opened.
+  // The viewer closed (Esc, its button, the browser's Back): the focus goes to the photo last
+  // shown (the grid's Tab stop follows it), so the keyboard carries on from there, not from the
+  // photo first opened.
   const viewerOpen = viewerIndex >= 0;
   const lastShown = useRef(null);
   if (viewerOpen) lastShown.current = route.asset;
@@ -535,9 +590,7 @@ function App() {
     if (viewerOpen || !lastShown.current) return;
     const tile = document.querySelector(`.tile[data-id="${lastShown.current}"]`);
     if (!tile) return; // gone meanwhile (a job moved it)
-    tile.querySelector('[data-open]').focus({ preventScroll: true });
-    // The whole tile, not just its magnifier; its scroll margin keeps it clear of the top bar.
-    tile.scrollIntoView({ block: 'nearest' });
+    focusNav(tile.querySelector('[data-nav]'));
   }, [viewerOpen]);
 
   const member = route.kind === 'member' ? members.find((m) => m.id === route.id) : null;
@@ -560,14 +613,74 @@ function App() {
   }, []);
 
   const [collapsed, toggleCollapsed] = useCollapsed();
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const onMenu = useCallback(() => setDrawerOpen(true), []);
-  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+  const drawer = useRef(null);
+  const onMenu = useCallback(() => drawer.current?.showModal(), []);
+
+  // On a timeline: Esc clears the selection, Ctrl/Cmd+A selects every photo. Not while
+  // something is open on top (viewer, menu, a dropdown: their own Esc closes them first). The
+  // latest state comes through a ref: keys pressed quickly can arrive before an effect re-subscribes.
+  const keyState = useRef(null);
+  const onTimeline = items && route.kind !== 'queue';
+  keyState.current = { items, selected, isSelectable, on: onTimeline && !viewerOpen };
+  useEffect(() => {
+    const onKey = (e) => {
+      const esc = e.key === 'Escape';
+      const all = (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'a';
+      if (!esc && !all) return;
+      const { items, selected, isSelectable, on } = keyState.current;
+      if (!on || document.querySelector('[role="dialog"], dialog[open]')) return;
+      if (esc && selected.size > 0) {
+        clearSelection(true);
+      } else if (all && !e.target.closest?.('input, textarea, select, [contenteditable]')) {
+        // (in a field: the field's own select-all)
+        e.preventDefault();
+        const next = selectAll(items, isSelectable);
+        // A 1st selection swaps the top bar to the selection bar: its zoom buttons go.
+        if (selected.size === 0 && next.size > 0) refocusIf(true);
+        setSelected(next);
+      }
+    };
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [clearSelection]);
+
+  // The tab's title names the page; a screen reader hears the new page's name when it changes
+  // (not on the 1st one: the title says it). The focus stays where it was, e.g. on the sidebar.
+  useEffect(() => {
+    document.title = title ? `${title} – ${APP_NAME}` : APP_NAME;
+  }, [title]);
+  const pageKey = route.kind === 'member' ? `member:${route.id}` : route.kind;
+  const [announcement, setAnnouncement] = useState('');
+  const announcedPage = useRef(null);
+  useEffect(() => {
+    if (!title || route.kind === 'none') return;
+    if (announcedPage.current !== null && announcedPage.current !== pageKey) setAnnouncement(title);
+    announcedPage.current = pageKey;
+  }, [pageKey, title]);
+  // The short message at the bottom. The queue's job panel also shows it inside while it covers
+  // the page as a modal dialog (everything outside is hidden and inert then).
+  const toastView =
+    toast &&
+    html`<div
+      class=${`fixed bottom-6 left-1/2 z-40 max-w-[90vw] -translate-x-1/2 rounded-full px-4 py-2 text-sm shadow-2xl ${
+        toast.kind === 'error' ? 'bg-rose-600 text-white' : toast.kind === 'warn' ? 'bg-amber-500 text-neutral-950' : 'bg-neutral-100 text-neutral-900'
+      }`}
+      role="status"
+    >${toast.text}</div>`;
+  const skipTo = (e) => {
+    e.preventDefault();
+    focusPhotos(); // the queue page has no grid: its content
+  };
 
   // With the queue's side panel open (lg and up), the content column makes room for it, so the
   // top bar and its dropdowns end where the panel starts.
   return html`
     <div class="flex min-h-dvh" inert=${viewerOpen}>
+      <a
+        href="#main"
+        class="fixed left-2 top-2 z-50 -translate-y-20 rounded-full bg-sky-500 px-4 py-2 text-sm font-semibold text-white outline-none focus:translate-y-0 focus-visible:ring-2 focus-visible:ring-sky-200"
+        onClick=${skipTo}
+      >${route.kind === 'queue' ? 'Skip to queue' : 'Skip to photos'}</a>
       <${Sidebar}
         members=${members}
         route=${route}
@@ -575,19 +688,18 @@ function App() {
         jobs=${summary}
         collapsed=${collapsed}
         onToggle=${toggleCollapsed}
-        drawerOpen=${drawerOpen}
-        onCloseDrawer=${closeDrawer}
+        drawer=${drawer}
       />
       <div class="min-w-0 flex-1 lg:has-[[data-panel]]:pr-[28rem]">
         <${TopBar}
           title=${title}
-          count=${items && route.kind !== 'queue' ? items.length : null}
+          count=${onTimeline ? items.length : null}
           selectedCount=${selected.size}
           selectedFiles=${selected.size ? fileCount(items ?? [], selected) : 0}
           action=${action}
           tileSize=${tileSize}
           setTileSize=${setTileSize}
-          onClear=${() => setSelected(new Set())}
+          onClear=${(e) => clearSelection(e.detail === 0)}
           onMenu=${onMenu}
           jobs=${html`<${JobsIndicator} summary=${summary} readOnly=${readOnly} checking=${checking} onCheckAgain=${onCheckAgain} onRetry=${onRetry} onOpenJob=${openJob} onOpenQueue=${openQueue} />`}
         />
@@ -599,7 +711,7 @@ function App() {
           <span class="min-w-0 flex-1 break-words"><strong class="font-semibold">Read-only.</strong> ${status.problems.join(' • ')}</span>
           <${CheckAgain} checking=${checking} onClick=${onCheckAgain} />
         </div>`}
-        <main class="px-2 pb-24 sm:px-4">
+        <main id="main" tabindex="-1" class="px-2 pb-24 outline-none sm:px-4">
           ${route.kind === 'queue' &&
           html`<${QueuePage}
             summary=${summary}
@@ -607,6 +719,7 @@ function App() {
             tileSize=${tileSize}
             readOnly=${readOnly}
             onRetry=${onRetry}
+            toast=${toastView}
             jobId=${route.job}
             onSelectJob=${openJob}
           />`}
@@ -631,13 +744,8 @@ function App() {
         </main>
       </div>
     </div>
-    ${toast &&
-    html`<div
-      class=${`fixed bottom-6 left-1/2 z-40 max-w-[90vw] -translate-x-1/2 rounded-full px-4 py-2 text-sm shadow-2xl ${
-        toast.kind === 'error' ? 'bg-rose-600 text-white' : toast.kind === 'warn' ? 'bg-amber-500 text-neutral-950' : 'bg-neutral-100 text-neutral-900'
-      }`}
-      role="status"
-    >${toast.text}</div>`}
+    ${toastView}
+    <div class="sr-only" aria-live="polite">${announcement}</div>
     ${viewerOpen &&
     html`<${Viewer}
       items=${items}

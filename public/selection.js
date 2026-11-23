@@ -54,6 +54,11 @@ export function applyMarquee(base, hitIds, remove) {
   return next;
 }
 
+/** Ctrl/Cmd+A: every item that can be selected. */
+export function selectAll(items, isSelectable) {
+  return new Set(items.filter(isSelectable).map((i) => i.id));
+}
+
 /** Whole day: if all its selectable items are selected, unselect them; else select them all. */
 export function toggleDay(selected, dayItems, isSelectable) {
   const ids = dayItems.filter(isSelectable).map((i) => i.id);

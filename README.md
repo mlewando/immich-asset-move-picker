@@ -25,6 +25,12 @@ bytes the family account already has is not copied again, and its history says s
 The picker opens on the member last viewed in the browser; the 1st time, on the 1st member with
 photos on the timeline.
 
+It works from the keyboard: the photo grid is 1 Tab stop, the arrow keys move between photos and
+day headers, Space selects (Shift+Space a range, Space on a day header the whole day), Enter
+opens the photo, Esc clears the selection and Ctrl/Cmd+A selects every photo shown that can be
+selected. "Skip to photos" is the 1st Tab stop. On the Queue page the job tiles of In progress
+and of Done are 1 Tab stop each the same way; Enter or Space opens the job.
+
 > Works only with **Immich v3.4.1**.
 > It writes to Immich's database and library directly, so on any other version (or schema) it
 > stays read-only until it has been tested and updated. Each release's notes repeat its range.
