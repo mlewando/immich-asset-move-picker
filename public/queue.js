@@ -98,6 +98,7 @@ function TileGrid({ id, label, jobs, jobId, tileSize, onOpen, showState }) {
     class="nav-grid grid grid-cols-[repeat(auto-fill,minmax(min(var(--tile),30vw),1fr))] gap-1"
     style=${{ '--tile': `${tileSize}px` }}
     onFocusIn=${nav.onFocusIn}
+    onClick=${nav.onClick}
     onKeyDown=${nav.onKeyDown}
     onKeyUp=${nav.onKeyUp}
   >
@@ -299,16 +300,11 @@ function Detail({ job, closing, memberName, readOnly, onRetry, toast, onClose })
     else d.showModal();
     heading.current?.focus({ preventScroll: true });
   }, [wide]);
-  // Gone (after sliding out): the focus goes back to the job's tile, for keyboard users.
+  // Gone (after sliding out): the focus goes back to the job's tile, for keyboard users. Leaving
+  // the page already took the dialog out (and with it the page's inertness): no close() here.
   const jobId = useRef(job.id);
   jobId.current = job.id;
-  useEffect(() => {
-    const d = dialog.current;
-    return () => {
-      d.close();
-      document.querySelector(`[data-job="${jobId.current}"]`)?.focus({ preventScroll: true });
-    };
-  }, []);
+  useEffect(() => () => document.querySelector(`[data-job="${jobId.current}"]`)?.focus({ preventScroll: true }), []);
   // Esc closes through onClose (it slides out and updates the URL), not the dialog's own Esc.
   useEffect(() => {
     if (closing) return;
@@ -337,8 +333,10 @@ function Detail({ job, closing, memberName, readOnly, onRetry, toast, onClose })
         if (!closing) onClose();
       }}
       onClose=${(e) => {
-        // Closed by the browser anyway (a 2nd close request can't be refused): the same.
-        if (!e.currentTarget.open && !closing) onClose();
+        // Closed by the browser anyway (a 2nd close request can't be refused): the same. Not
+        // once it left the page (its listener outlives it): that is no request to close.
+        const d = e.currentTarget;
+        if (d.isConnected && !d.open && !closing) onClose();
       }}
     >
       <div class="flex h-14 shrink-0 items-center gap-2 border-b border-white/5 pl-5 pr-2">

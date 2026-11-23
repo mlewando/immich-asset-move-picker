@@ -84,14 +84,19 @@ export function useRovingFocus(wrapRef, groups, items, hasHead, onActivate, onEm
     else onEmpty?.();
   });
 
-  const onFocusIn = (e) => {
-    rememberFocus(e);
-    const el = navOf(e.target);
+  const moveStopTo = (target) => {
+    const el = navOf(target);
     if (!el) return;
     setCurrent(el.dataset.nav);
     const pos = where.get(el.dataset.nav);
     if (pos) lastIndex.current = pos.index;
   };
+  const onFocusIn = (e) => {
+    rememberFocus(e);
+    moveStopTo(e.target);
+  };
+  // Safari and Firefox on macOS don't focus a clicked button: the click moves the Tab stop there.
+  const onClick = (e) => moveStopTo(e.target);
 
   const onKeyDown = (e) => {
     const navEl = navOf(e.target);
@@ -121,5 +126,5 @@ export function useRovingFocus(wrapRef, groups, items, hasHead, onActivate, onEm
     if (e.key === ' ' && nav && where.get(nav)?.at !== 'head') e.preventDefault();
   };
 
-  return { stop, onFocusIn, onKeyDown, onKeyUp };
+  return { stop, onFocusIn, onClick, onKeyDown, onKeyUp };
 }

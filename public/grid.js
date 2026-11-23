@@ -239,6 +239,7 @@ export function Grid({ items, selected, setSelected, isSelectable, tileSize, onS
       onPointerDown=${onPointerDown}
       onClickCapture=${onClickCapture}
       onFocusIn=${nav.onFocusIn}
+      onClick=${nav.onClick}
       onKeyDown=${nav.onKeyDown}
       onKeyUp=${nav.onKeyUp}
     >
