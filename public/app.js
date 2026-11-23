@@ -634,6 +634,16 @@ function App() {
     if (announcedPage.current !== null && announcedPage.current !== pageKey) setAnnouncement(title);
     announcedPage.current = pageKey;
   }, [pageKey, title]);
+  // The short message at the bottom. The queue's job panel also shows it inside while it covers
+  // the page as a modal dialog (everything outside is hidden and inert then).
+  const toastView =
+    toast &&
+    html`<div
+      class=${`fixed bottom-6 left-1/2 z-40 max-w-[90vw] -translate-x-1/2 rounded-full px-4 py-2 text-sm shadow-2xl ${
+        toast.kind === 'error' ? 'bg-rose-600 text-white' : toast.kind === 'warn' ? 'bg-amber-500 text-neutral-950' : 'bg-neutral-100 text-neutral-900'
+      }`}
+      role="status"
+    >${toast.text}</div>`;
   const skipTo = (e) => {
     e.preventDefault();
     focusPhotos(); // the queue page has no grid: its content
@@ -686,6 +696,7 @@ function App() {
             tileSize=${tileSize}
             readOnly=${readOnly}
             onRetry=${onRetry}
+            toast=${toastView}
             jobId=${route.job}
             onSelectJob=${openJob}
           />`}
@@ -710,13 +721,7 @@ function App() {
         </main>
       </div>
     </div>
-    ${toast &&
-    html`<div
-      class=${`fixed bottom-6 left-1/2 z-40 max-w-[90vw] -translate-x-1/2 rounded-full px-4 py-2 text-sm shadow-2xl ${
-        toast.kind === 'error' ? 'bg-rose-600 text-white' : toast.kind === 'warn' ? 'bg-amber-500 text-neutral-950' : 'bg-neutral-100 text-neutral-900'
-      }`}
-      role="status"
-    >${toast.text}</div>`}
+    ${toastView}
     <div class="sr-only" aria-live="polite">${announcement}</div>
     ${viewerOpen &&
     html`<${Viewer}

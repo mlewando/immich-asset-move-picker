@@ -258,7 +258,7 @@ function History({ events }) {
 }
 
 /** closing: sliding out (it unmounts after PANEL_MS); the page already takes its room back. */
-function Detail({ job, closing, memberName, readOnly, onRetry, onClose }) {
+function Detail({ job, closing, memberName, readOnly, onRetry, toast, onClose }) {
   const [events, setEvents] = useState(null);
   const [enlarged, setEnlarged] = useState(false);
   const heading = useRef(null);
@@ -386,11 +386,12 @@ function Detail({ job, closing, memberName, readOnly, onRetry, onClose }) {
         ><${Icon} name="refresh" class="size-4" />Retry</button>
       </div>`}
       ${enlarged && html`<${Enlarged} job=${job} onClose=${() => setEnlarged(false)} />`}
+      ${!wide && toast}
     </dialog>`;
 }
 
 /** jobId: the job shown in the side panel (from the URL); onSelectJob(id | null) changes it. */
-export function QueuePage({ summary, members, tileSize, readOnly, onRetry, jobId, onSelectJob }) {
+export function QueuePage({ summary, members, tileSize, readOnly, onRetry, toast, jobId, onSelectJob }) {
   const [onlyFailures, setOnlyFailures] = useState(false);
   // Done is the long one, and rarely what you come for: closed until asked.
   const [open, setOpen] = useState({ failed: true, active: true, done: false });
@@ -474,5 +475,5 @@ export function QueuePage({ summary, members, tileSize, readOnly, onRetry, jobId
       >${done.jobs && tiles('done-jobs', 'Done jobs', done.jobs, (j) => j.failures > 0)}</${Section}>
     </div>
     ${selected &&
-    html`<${Detail} job=${selected} closing=${closing} memberName=${memberName(selected.memberId)} readOnly=${readOnly} onRetry=${onRetry} onClose=${close} />`}`;
+    html`<${Detail} job=${selected} closing=${closing} memberName=${memberName(selected.memberId)} readOnly=${readOnly} onRetry=${onRetry} toast=${toast} onClose=${close} />`}`;
 }
