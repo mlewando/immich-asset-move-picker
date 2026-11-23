@@ -285,7 +285,9 @@ export function createWorker(
   // quick: started by the paused worker's own timer.
   const start = (quick: boolean): void => {
     if (running) {
-      again = true; // something new arrived meanwhile: look at the queue once more after
+      // Something new arrived meanwhile: look at the queue once more after. Not for the timer:
+      // the run ends with a guard of its own, and another right after it would only wait again.
+      if (!quick) again = true;
       return;
     }
     running = (async () => {

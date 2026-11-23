@@ -360,19 +360,44 @@ test('worker: the next check while paused counts from the start of the last one'
   await wk.idle();
 });
 
-test('worker: a drain that throws waits for the next kick, not the paused worker\'s timer', async () => {
+test('worker: a drain that throws is not retried on a timer', async () => {
   const s = setup({ a: 'timeline' });
   s.queue.enqueue('move', ['a'], { memberId: MEMBER });
   let calls = 0;
   const guard = async () => {
     calls++;
-    throw new Error('SQLITE_IOERR');
+    return ok;
   };
-  const wk = createWorker({ ...s.deps, guard, log: silent, recheckMs: 20 });
+  const queue = {
+    ...s.queue,
+    claimNext: () => {
+      throw new Error('SQLITE_IOERR');
+    },
+  };
+  const wk = createWorker({ ...s.deps, queue, guard, log: silent, recheckMs: 20 });
   wk.kick();
   await wk.idle();
   await sleep(100);
-  assert.equal(calls, 1, 'a broken disk is not retried every recheckMs');
+  assert.equal(calls, 1, 'a broken disk waits for the next kick');
+});
+
+test('worker: Check again stays a full check when the timer fired during a run', async () => {
+  const s = setup({});
+  let calls = 0;
+  // Down for the first 2 checks; then up, but slower than a quick check waits.
+  const guard = async (o: { quick: boolean }) => {
+    calls++;
+    await sleep(100); // slower than recheckMs: the timer fires during it
+    return calls <= 2 || o.quick ? bad : ok;
+  };
+  const wk = createWorker({ ...s.deps, guard, log: silent, recheckMs: 20 });
+  wk.kick(); // pauses
+  await wk.idle();
+  wk.kick(); // a run whose guard outlasts the timer
+  await sleep(50);
+  const state = await wk.recheck(); // queued behind that run's guard
+  assert.equal(state.paused, false, 'Check again ran full and found Immich up');
+  await wk.idle();
 });
 
 test('worker: on resume, jobs waiting for an automatic retry are tried at once, attempts kept', async () => {
