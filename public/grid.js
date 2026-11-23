@@ -2,13 +2,14 @@
 // Click a tile = select it (shift-click = range); the magnifier corner (bottom-right third)
 // opens the viewer. The magnifier shows on hover, or always on a touch screen (no hover there). A tile that can't be selected (family "no origin") opens on click instead.
 // Keyboard: the whole grid is 1 Tab stop (roving tabindex over the photos and day buttons);
-// arrows move, Space selects (Shift+Space: range), Enter opens.
+// arrows move, Space selects (Shift+Space: range), Enter opens (public/roving.js).
 import { Component, h } from 'preact';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
 import { media } from './api.js';
-import { dayKey, moveFocus, tabStop } from './gridnav.js';
+import { dayKey } from './gridnav.js';
 import { CheckCircle, Icon } from './icons.js';
+import { useRovingFocus } from './roving.js';
 import { applyMarquee, groupByDay, rectsIntersect } from './selection.js';
 import { Thumb } from './thumb.js';
 
@@ -52,11 +53,11 @@ class Tile extends Component {
     const p = this.props;
     return (
       next.item !== p.item || next.selected !== p.selected || next.selectable !== p.selectable ||
-      next.index !== p.index || next.large !== p.large || next.tabStop !== p.tabStop
+      next.index !== p.index || next.large !== p.large || next.isTabStop !== p.isTabStop
     );
   }
 
-  render({ item, index, selected, selectable, large, tabStop, onSelect, onOpen }) {
+  render({ item, index, selected, selectable, large, isTabStop, onSelect, onOpen }) {
     const src = large ? media.preview(item.id) : media.thumbnail(item.id);
     return html`
       <div
@@ -66,7 +67,7 @@ class Tile extends Component {
       >
         <button
           data-nav=${item.id}
-          tabindex=${tabStop ? 0 : -1}
+          tabindex=${isTabStop ? 0 : -1}
           class=${`photo-ring absolute inset-0 block size-full ${selectable ? 'cursor-pointer' : 'cursor-zoom-in'}`}
           aria-pressed=${selectable ? selected : undefined}
           aria-label=${selectable ? `${selected ? 'Unselect' : 'Select'} ${item.fileName}` : `Open ${item.fileName}`}
@@ -203,110 +204,18 @@ function useMarquee(wrapRef, selected, setSelected) {
   return { box, onPointerDown, onClickCapture };
 }
 
-const NAV_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']);
-
-/** Focuses a photo's (or day's) grid button and scrolls it into view. */
-export function focusNav(el) {
-  el.focus({ preventScroll: true });
-  // The tile, not its button: the tile's scroll margin keeps it clear of the sticky top bar.
-  (el.closest('.tile') ?? el).scrollIntoView({ block: 'nearest' });
-}
-
-/**
- * The grid's 1 Tab stop (roving tabindex): a photo id or dayKey(day). It follows the focus.
- * When its photo or day button goes (a job moved it, a reload), tabStop() picks the next one,
- * and the focus moves with it if it was in the grid.
- */
-function useRovingFocus(wrapRef, groups, items, isSelectable, onSelect, onOpen) {
-  const [current, setCurrent] = useState(null);
-  const lastIndex = useRef(0); // flat index of the photo the Tab stop was last on
-  const focusInside = useRef(false);
-
-  // Each day as moveFocus sees it, and where every photo / day button sits.
-  const { navDays, where } = useMemo(() => {
-    const where = new Map();
-    const navDays = groups.map(({ day, entries }, d) => {
-      const head = entries.some((e) => isSelectable(e.item));
-      // index: the flat index of the photo, or of the day's 1st photo for its day button.
-      if (head) where.set(dayKey(day), { day: d, at: 'head', index: entries[0].index });
-      entries.forEach((e, at) => where.set(e.item.id, { day: d, at, index: e.index }));
-      return { count: entries.length, head };
-    });
-    return { navDays, where };
-  }, [groups, isSelectable]);
-  const keyOf = (pos) => (pos.at === 'head' ? dayKey(groups[pos.day].day) : groups[pos.day].entries[pos.at].item.id);
-
-  const stop = tabStop(items, groups, where, current, lastIndex.current);
-
-  const elementOf = (key) => wrapRef.current?.querySelector(`[data-nav="${CSS.escape(key)}"]`);
-  const focusKey = (key) => {
-    const el = elementOf(key);
-    if (el) focusNav(el);
-  };
-
-  // The Tab stop moved off a photo or day button that went: the focus follows if it was in the grid.
-  useEffect(() => {
-    if (stop === current || !stop || !focusInside.current) return;
-    const active = document.activeElement;
-    const wasInside = active === document.body || wrapRef.current?.contains(active);
-    if (current && wasInside) elementOf(stop)?.focus({ preventScroll: true });
-  });
-
-  // The grid button an event is about (the magnifier counts as its photo's button).
-  const navOf = (target) => target.closest('[data-nav]') ?? target.closest('.tile')?.querySelector('[data-nav]');
-
-  const onFocusIn = (e) => {
-    focusInside.current = true;
-    const el = navOf(e.target);
-    if (!el) return;
-    const key = el.dataset.nav;
-    setCurrent(key);
-    const pos = where.get(key);
-    if (pos) lastIndex.current = pos.index;
-  };
-  // Only a move to somewhere else counts as leaving: removing the focused button (a job moved its
-  // photo) fires focusout with no relatedTarget, and the focus must then follow to the next one.
-  const onFocusOut = (e) => {
-    if (e.relatedTarget && !wrapRef.current?.contains(e.relatedTarget)) focusInside.current = false;
-  };
-
-  const onKeyDown = (e) => {
-    const navEl = navOf(e.target);
-    const onNavButton = navEl === e.target; // not the magnifier
-    if (!navEl) return;
-    const pos = where.get(navEl.dataset.nav);
-    if (!pos) return;
-    if (NAV_KEYS.has(e.key)) {
-      if (e.altKey || e.ctrlKey || e.metaKey) return; // e.g. Alt+← is the browser's Back
-      e.preventDefault();
-      const tracks = getComputedStyle(navEl.closest('.day').querySelector('.day-grid')).gridTemplateColumns;
-      const cols = Math.max(1, tracks.split(' ').length);
-      focusKey(keyOf(moveFocus(navDays, cols, pos, e.key)));
-      return;
-    }
-    // Space and Enter on a photo are handled here, not by the button's own click, so Shift is
-    // read from the key itself (a Space-made click doesn't carry it in every browser).
-    if (!onNavButton || pos.at === 'head' || (e.key !== 'Enter' && e.key !== ' ')) return;
-    e.preventDefault();
-    if (e.repeat) return; // a held key acts once, like a button's click
-    const { item, index } = groups[pos.day].entries[pos.at];
-    if (e.key === 'Enter') onOpen(item.id);
-    else if (isSelectable(item)) onSelect(index, e.shiftKey);
-  };
-  // The button would still click on Space's release.
-  const onKeyUp = (e) => {
-    if (e.key === ' ' && e.target.closest('.tile [data-nav]')) e.preventDefault();
-  };
-
-  return { stop, onFocusIn, onFocusOut, onKeyDown, onKeyUp };
-}
-
 /** empty: what to say when there are no items (title, hint). */
 export function Grid({ items, selected, setSelected, isSelectable, tileSize, onSelect, onDay, onOpen, empty }) {
   const groups = useMemo(() => groupByDay(items), [items]);
   const wrapRef = useRef(null);
   const { box, onPointerDown, onClickCapture } = useMarquee(wrapRef, selected, setSelected);
-  const nav = useRovingFocus(wrapRef, groups, items, isSelectable, onSelect, onOpen);
+  // A day has its "select this day" button when something in it can be selected.
+  const hasHead = useCallback((entries) => entries.some((e) => isSelectable(e.item)), [isSelectable]);
+  // Enter opens; Space selects (Shift+Space: range), or opens a photo that can't be selected.
+  const nav = useRovingFocus(wrapRef, groups, items, hasHead, ({ item, index }, e) => {
+    if (e.key === 'Enter' || !isSelectable(item)) onOpen(item.id);
+    else onSelect(index, e.shiftKey);
+  });
   if (items.length === 0) {
     return html`<div class="flex flex-col items-center gap-2 py-20 text-center">
       <span class="grid size-14 place-items-center rounded-full bg-white/5 text-neutral-500"><${Icon} name="album" class="size-7" /></span>
@@ -361,7 +270,7 @@ export function Grid({ items, selected, setSelected, isSelectable, tileSize, onS
                     ${count}
                   </span>`}
             </h2>
-            <div class="day-grid grid grid-cols-[repeat(auto-fill,minmax(min(var(--tile),30vw),1fr))] gap-1">
+            <div class="nav-grid grid grid-cols-[repeat(auto-fill,minmax(min(var(--tile),30vw),1fr))] gap-1">
               ${entries.map(
                 ({ item, index }) => html`<${Tile}
                   key=${item.id}
@@ -370,7 +279,7 @@ export function Grid({ items, selected, setSelected, isSelectable, tileSize, onS
                   selected=${selected.has(item.id)}
                   selectable=${isSelectable(item)}
                   large=${large}
-                  tabStop=${nav.stop === item.id}
+                  isTabStop=${nav.stop === item.id}
                   onSelect=${onSelect}
                   onOpen=${onOpen}
                 />`,

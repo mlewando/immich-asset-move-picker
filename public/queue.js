@@ -2,12 +2,13 @@
 // sections (failed, in progress, done), and per job a side panel with its steps and history: each
 // step, wait, failure and retry.
 import { h } from 'preact';
-import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
 import { api, media } from './api.js';
 import { Icon } from './icons.js';
 import { expiry } from './expiry.js';
 import { ago, eventOf, kindLabel, STEPS, stateOf, time, TONE } from './jobstate.js';
+import { useRovingFocus } from './roving.js';
 import { Thumb } from './thumb.js';
 
 const html = htm.bind(h);
@@ -62,12 +63,14 @@ const GiveBackMark = () =>
  * A photo tile. Its section already says failed / in progress / done, so a tile only adds what
  * differs: the step in progress, or that a done job failed on the way.
  */
-function Tile({ job, active, onOpen, showState }) {
+function Tile({ job, active, isTabStop, onOpen, showState }) {
   const s = job.status === 'done' ? { text: `${job.failures}× failed`, tone: 'warn' } : stateOf(job);
   const label = `${kindLabel(job)} ${job.fileName ?? ''}: ${s.text}`;
   return html`<button
     data-job=${job.id}
-    class="photo-ring group relative aspect-square overflow-hidden bg-neutral-800"
+    data-nav=${String(job.id)}
+    tabindex=${isTabStop ? 0 : -1}
+    class="photo-ring group relative aspect-square scroll-mt-14 overflow-hidden bg-neutral-800"
     aria-current=${active ? 'true' : undefined}
     onClick=${() => onOpen(job.id)}
     aria-label=${label}
@@ -80,6 +83,33 @@ function Tile({ job, active, onOpen, showState }) {
       <span class=${`max-w-full truncate rounded-full bg-black/65 px-2 py-0.5 text-[11px] font-medium backdrop-blur-sm ${s.tone === 'warn' ? 'text-amber-200' : s.tone === 'busy' ? 'text-sky-200' : 'text-neutral-200'}`}>${s.text}</span>
     </span>`}
   </button>`;
+}
+
+const noHeads = () => false;
+
+/** A section's job tiles: 1 Tab stop, arrows move, Enter or Space opens the job (public/roving.js). */
+function TileGrid({ id, label, jobs, jobId, tileSize, onOpen, showState }) {
+  const wrap = useRef(null);
+  const items = useMemo(() => jobs.map((job) => ({ id: String(job.id), job })), [jobs]);
+  const groups = useMemo(() => [{ day: id, entries: items.map((item, index) => ({ item, index })) }], [id, items]);
+  const nav = useRovingFocus(wrap, groups, items, noHeads, ({ item }) => onOpen(item.job.id));
+  return html`<div
+    ref=${wrap}
+    role="group"
+    aria-label=${label}
+    aria-describedby=${`${id}-keys`}
+    class="nav-grid grid grid-cols-[repeat(auto-fill,minmax(min(var(--tile),30vw),1fr))] gap-1"
+    style=${{ '--tile': `${tileSize}px` }}
+    onFocusIn=${nav.onFocusIn}
+    onFocusOut=${nav.onFocusOut}
+    onKeyDown=${nav.onKeyDown}
+    onKeyUp=${nav.onKeyUp}
+  >
+    <p id=${`${id}-keys`} class="sr-only">Arrow keys move, Enter opens.</p>
+    ${jobs.map(
+      (j) => html`<${Tile} key=${j.id} job=${j} active=${j.id === jobId} isTabStop=${nav.stop === String(j.id)} onOpen=${onOpen} showState=${showState} />`,
+    )}
+  </div>`;
 }
 
 /** A failed job: its reason matters more than its photo, so a card with both and Retry. */
@@ -375,9 +405,8 @@ export function QueuePage({ summary, members, tileSize, readOnly, onRetry, jobId
   }, [jobId, onSelectJob]);
 
   const memberName = (id) => members.find((m) => m.id === id)?.name ?? null;
-  const tiles = (jobs, showState) => html`<div class="grid grid-cols-[repeat(auto-fill,minmax(min(var(--tile),30vw),1fr))] gap-1" style=${{ '--tile': `${tileSize}px` }}>
-    ${jobs.map((j) => html`<${Tile} key=${j.id} job=${j} active=${j.id === jobId} onOpen=${onSelectJob} showState=${showState} />`)}
-  </div>`;
+  const tiles = (id, label, jobs, showState) =>
+    html`<${TileGrid} id=${id} label=${label} jobs=${jobs} jobId=${jobId} tileSize=${tileSize} onOpen=${onSelectJob} showState=${showState} />`;
 
   // Nothing ever queued (or all of it pruned): 1 message rather than 3 empty sections.
   if (summary && !summary.failed.length && !summary.pending && !summary.running && !summary.done) {
@@ -405,7 +434,7 @@ export function QueuePage({ summary, members, tileSize, readOnly, onRetry, jobId
         onToggle=${toggle('active')}
         data=${active}
         empty="Nothing queued."
-      >${active.jobs && tiles(active.jobs, () => true)}</${Section}>
+      >${active.jobs && tiles('active-jobs', 'Jobs in progress', active.jobs, () => true)}</${Section}>
       <${Section}
         id="done"
         title="Done"
@@ -418,7 +447,7 @@ export function QueuePage({ summary, members, tileSize, readOnly, onRetry, jobId
           <input type="checkbox" class="size-4 accent-sky-500" checked=${onlyFailures} onChange=${(e) => setOnlyFailures(e.currentTarget.checked)} />
           Only with failures
         </label>`}
-      >${done.jobs && tiles(done.jobs, (j) => j.failures > 0)}</${Section}>
+      >${done.jobs && tiles('done-jobs', 'Done jobs', done.jobs, (j) => j.failures > 0)}</${Section}>
     </div>
     ${selected &&
     html`<${Detail} job=${selected} closing=${closing} memberName=${memberName(selected.memberId)} readOnly=${readOnly} onRetry=${onRetry} onClose=${close} />`}`;

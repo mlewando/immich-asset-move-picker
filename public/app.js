@@ -5,11 +5,12 @@ import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
 import { api } from './api.js';
 import { FilterBar } from './filters.js';
-import { focusNav, Grid } from './grid.js';
+import { Grid } from './grid.js';
 import { Icon } from './icons.js';
 import { keepAlive } from './expiry.js';
 import { JobsIndicator, StorageTemplateReminder, useJobs } from './jobs.js';
 import { QueuePage } from './queue.js';
+import { focusNav } from './roving.js';
 import { addRange, fileCount, selectAll, toggleDay, toggleOne } from './selection.js';
 import { startMember } from './start.js';
 import { Viewer } from './viewer.js';
@@ -278,7 +279,7 @@ function TopBar({ title, count, selectedCount, selectedFiles, action, tileSize, 
   }
   return html`
     <header class=${`${bar} bg-neutral-950`}>
-      <button class=${`${iconBtn} md:hidden`} onClick=${onMenu} aria-label="Menu" title="Menu"><${Icon} name="menu" /></button>
+      <button data-menu-button class=${`${iconBtn} md:hidden`} onClick=${onMenu} aria-label="Menu" title="Menu"><${Icon} name="menu" /></button>
       <div class="min-w-16 flex-1 truncate">
         <h1 class="inline text-base font-semibold">${title}</h1>
         ${count !== null && html`<span class="ml-2 hidden text-sm text-neutral-500 @2xl:inline">${count} items</span>`}
@@ -579,6 +580,21 @@ function App() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const onMenu = useCallback(() => setDrawerOpen(true), []);
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+  // The phone menu is modal: what it covers is inert while it is open, and closing it gives the
+  // focus back to the Menu button. From md up it is not shown, so it closes there.
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const behind = document.querySelectorAll('[data-behind-panel], #main');
+    behind.forEach((el) => el.toggleAttribute('inert', true));
+    const wide = matchMedia('(min-width: 48rem)');
+    const onWide = () => wide.matches && setDrawerOpen(false);
+    wide.addEventListener('change', onWide);
+    return () => {
+      wide.removeEventListener('change', onWide);
+      behind.forEach((el) => el.toggleAttribute('inert', false));
+      document.querySelector('[data-menu-button]')?.focus();
+    };
+  }, [drawerOpen]);
 
   // On a timeline: Esc clears the selection, Ctrl/Cmd+A selects every photo. Not while
   // something is open on top (viewer, menu, a dropdown: their own Esc closes them first). The
