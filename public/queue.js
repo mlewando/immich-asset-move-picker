@@ -18,9 +18,9 @@ const focusRing = 'outline-none focus-visible:ring-2 focus-visible:ring-sky-400'
 const PANEL_MS = 120; // the side panel's slide out (animate-panel-out in styles/app.css)
 const WIDE = '(min-width: 64rem)'; // Tailwind's lg: from here the panel sits beside the page
 
-// What the full-screen panel covers (marked data-behind-panel): inert while it is open, so
+// What the full-screen panel covers (marked data-behind-modal): inert while it is open, so
 // neither Tab nor a screen reader's swipe leaves the panel.
-const setBehindInert = (on) => holdInert('job-panel', on ? document.querySelectorAll('[data-behind-panel]') : null);
+const setBehindInert = (on) => holdInert('job-panel', on ? document.querySelectorAll('[data-behind-modal]') : null);
 
 /**
  * 1 section, loaded page by page. Reloads every page shown so far whenever `refreshKey` changes
@@ -92,6 +92,7 @@ const noHeads = () => false;
 function TileGrid({ id, label, jobs, jobId, tileSize, onOpen, showState }) {
   const wrap = useRef(null);
   const items = useMemo(() => jobs.map((job) => ({ id: String(job.id), job })), [jobs]);
+  // The section is 1 group (the hook takes days) with no header button.
   const groups = useMemo(() => [{ day: id, entries: items.map((item, index) => ({ item, index })) }], [id, items]);
   const nav = useRovingFocus(wrap, groups, items, noHeads, ({ item }) => onOpen(item.job.id));
   return html`<div
@@ -419,7 +420,7 @@ export function QueuePage({ summary, members, tileSize, readOnly, onRetry, jobId
   }
 
   return html`
-    <div class="pb-8" data-behind-panel>
+    <div class="pb-8" data-behind-modal>
       <${Section} id="failed" title="Failed" count=${summary?.failed.length} open=${open.failed} onToggle=${toggle('failed')} data=${failed} empty="Nothing failed.">
         <div class="grid grid-cols-[repeat(auto-fill,minmax(min(24rem,100%),1fr))] gap-2">
           ${failed.jobs?.map(

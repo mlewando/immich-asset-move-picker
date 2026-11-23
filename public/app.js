@@ -239,7 +239,7 @@ function Sidebar(props) {
   }, [drawerOpen]);
   return html`
     <aside
-      data-behind-panel
+      data-behind-modal
       class=${`sticky top-0 hidden h-dvh shrink-0 flex-col overflow-hidden whitespace-nowrap border-r border-white/5 bg-neutral-900/60 px-2 pb-2 transition-[width] duration-200 md:flex ${collapsed ? 'w-[4.5rem]' : 'w-64'}`}
     >
       <${Logo} />
@@ -585,7 +585,7 @@ function App() {
   // focus back to the Menu button. From md up it is not shown, so it closes there.
   useEffect(() => {
     if (!drawerOpen) return;
-    holdInert('menu', document.querySelectorAll('[data-behind-panel], #main'));
+    holdInert('menu', document.querySelectorAll('[data-behind-modal], #main'));
     const wide = matchMedia('(min-width: 48rem)');
     const onWide = () => wide.matches && setDrawerOpen(false);
     wide.addEventListener('change', onWide);
@@ -648,7 +648,7 @@ function App() {
     <div class="flex min-h-dvh" inert=${viewerOpen}>
       <a
         href="#main"
-        data-behind-panel
+        data-behind-modal
         class="fixed left-2 top-2 z-50 -translate-y-20 rounded-full bg-sky-500 px-4 py-2 text-sm font-semibold text-white outline-none focus:translate-y-0 focus-visible:ring-2 focus-visible:ring-sky-200"
         onClick=${skipTo}
       >${route.kind === 'queue' ? 'Skip to queue' : 'Skip to photos'}</a>
@@ -663,7 +663,7 @@ function App() {
         onCloseDrawer=${closeDrawer}
       />
       <div class="min-w-0 flex-1 lg:has-[[data-panel]]:pr-[28rem]">
-        <div class="contents" data-behind-panel>
+        <div class="contents" data-behind-modal>
           <${TopBar}
             title=${title}
             count=${onTimeline ? items.length : null}

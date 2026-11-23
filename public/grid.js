@@ -101,7 +101,7 @@ class Tile extends Component {
           title="Open"
           onClick=${() => onOpen(item.id)}
         >
-          <span class="rounded-full bg-black/55 p-1.5 text-white opacity-0 shadow-sm backdrop-blur-sm transition-[opacity,scale,background-color,color] duration-150 group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-hover/zoom:scale-115 group-hover/zoom:bg-white group-hover/zoom:text-neutral-900 group-focus-visible/zoom:opacity-100 group-focus-visible/zoom:ring-2 group-focus-visible/zoom:ring-sky-400">
+          <span class="rounded-full bg-black/55 p-1.5 text-white opacity-0 shadow-sm backdrop-blur-sm transition-[opacity,scale,background-color,color] duration-150 group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-hover/zoom:scale-115 group-hover/zoom:bg-white group-hover/zoom:text-neutral-900">
             <${Icon} name="magnify" class="size-4" />
           </span>
         </button>
