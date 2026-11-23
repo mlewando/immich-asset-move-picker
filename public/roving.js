@@ -13,7 +13,37 @@ export function focusNav(el) {
 }
 
 // The grid button an event is about (a photo's magnifier counts as its photo's button).
-const navOf = (target) => target.closest('[data-nav]') ?? target.closest('.tile')?.querySelector('[data-nav]');
+const navOf = (target) => target.closest?.('[data-nav]') ?? target.closest?.('.tile')?.querySelector('[data-nav]');
+
+/**
+ * Hands the focus on when the grid button holding it leaves the page (a job moved its photo, a
+ * reload): browsers then drop the focus to the page body. Returns the focusin handler for the
+ * element around the buttons; it remembers the last button focused there. After a render in
+ * which that button is gone and the focus is on the body, onLost({ section }) runs (section:
+ * the <section> the button was in). A press anywhere but on a grid button forgets it, so a mouse
+ * user who clicked away isn't pulled back in.
+ */
+export function useLostFocus(onLost) {
+  const last = useRef(null);
+  useEffect(() => {
+    const forget = (e) => {
+      if (last.current && !(navOf(e.target) && last.current.root.contains(e.target))) last.current = null;
+    };
+    document.addEventListener('pointerdown', forget, true);
+    return () => document.removeEventListener('pointerdown', forget, true);
+  }, []);
+  useEffect(() => {
+    const lost = last.current;
+    if (!lost || lost.el.isConnected) return;
+    last.current = null;
+    const active = document.activeElement;
+    if (!active || active === document.body) onLost(lost);
+  });
+  return (e) => {
+    const el = navOf(e.target);
+    last.current = el ? { el, root: e.currentTarget, section: el.closest('section') } : null;
+  };
+}
 
 /**
  * groups: [{ day, entries: [{ item, index }] }] (as groupByDay), items: the same flat, each with
@@ -23,13 +53,13 @@ const navOf = (target) => target.closest('[data-nav]') ?? target.closest('.tile'
  * a header button keeps its own click.
  *
  * The Tab stop follows the focus. When its button goes (a job moved its photo, a reload),
- * tabStop() picks the next one, and the focus moves with it if it was in the grid.
- * Returns the Tab stop's key and the wrapper's event handlers.
+ * tabStop() picks the next one, and the focus moves with it if it was on the gone button
+ * (onEmpty() runs instead when nothing is left). Returns the Tab stop's key and the wrapper's
+ * event handlers.
  */
-export function useRovingFocus(wrapRef, groups, items, hasHead, onActivate) {
+export function useRovingFocus(wrapRef, groups, items, hasHead, onActivate, onEmpty) {
   const [current, setCurrent] = useState(null);
   const lastIndex = useRef(0); // flat index of the item the Tab stop was last on
-  const focusInside = useRef(false);
 
   // Each group as moveFocus sees it, and where every button sits.
   const { navDays, where } = useMemo(() => {
@@ -48,34 +78,19 @@ export function useRovingFocus(wrapRef, groups, items, hasHead, onActivate) {
   const stop = tabStop(items, groups, where, current, lastIndex.current);
   const elementOf = (key) => wrapRef.current?.querySelector(`[data-nav="${CSS.escape(key)}"]`);
 
-  // The Tab stop moved off a button that went: the focus follows if it was in the grid.
-  useEffect(() => {
-    if (stop === current || !stop || !focusInside.current) return;
-    const active = document.activeElement;
-    if (active === document.body || wrapRef.current?.contains(active)) elementOf(stop)?.focus({ preventScroll: true });
+  const rememberFocus = useLostFocus(() => {
+    const el = stop && elementOf(stop);
+    if (el) el.focus({ preventScroll: true });
+    else onEmpty?.();
   });
 
   const onFocusIn = (e) => {
-    focusInside.current = true;
+    rememberFocus(e);
     const el = navOf(e.target);
     if (!el) return;
     setCurrent(el.dataset.nav);
     const pos = where.get(el.dataset.nav);
     if (pos) lastIndex.current = pos.index;
-  };
-  // Removing the focused button (a job moved its photo) fires focusout with no relatedTarget
-  // before it detaches: that doesn't count as leaving, the focus must follow to the next one. A
-  // click on the empty page (also no relatedTarget) leaves the button in place, and does count.
-  const onFocusOut = (e) => {
-    if (e.relatedTarget) {
-      if (!wrapRef.current?.contains(e.relatedTarget)) focusInside.current = false;
-    } else {
-      const el = e.target;
-      // Leaving the browser window also has no relatedTarget: the focus is still on the button.
-      queueMicrotask(() => {
-        if (el.isConnected && document.hasFocus()) focusInside.current = false;
-      });
-    }
   };
 
   const onKeyDown = (e) => {
@@ -106,5 +121,5 @@ export function useRovingFocus(wrapRef, groups, items, hasHead, onActivate) {
     if (e.key === ' ' && nav && where.get(nav)?.at !== 'head') e.preventDefault();
   };
 
-  return { stop, onFocusIn, onFocusOut, onKeyDown, onKeyUp };
+  return { stop, onFocusIn, onKeyDown, onKeyUp };
 }

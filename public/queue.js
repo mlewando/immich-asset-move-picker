@@ -8,8 +8,7 @@ import { api, media } from './api.js';
 import { Icon } from './icons.js';
 import { expiry } from './expiry.js';
 import { ago, eventOf, kindLabel, STEPS, stateOf, time, TONE } from './jobstate.js';
-import { holdInert } from './inert.js';
-import { useRovingFocus } from './roving.js';
+import { useLostFocus, useRovingFocus } from './roving.js';
 import { Thumb } from './thumb.js';
 
 const html = htm.bind(h);
@@ -17,10 +16,6 @@ const html = htm.bind(h);
 const focusRing = 'outline-none focus-visible:ring-2 focus-visible:ring-sky-400';
 const PANEL_MS = 120; // the side panel's slide out (animate-panel-out in styles/app.css)
 const WIDE = '(min-width: 64rem)'; // Tailwind's lg: from here the panel sits beside the page
-
-// What the full-screen panel covers (marked data-behind-modal): inert while it is open, so
-// neither Tab nor a screen reader's swipe leaves the panel.
-const setBehindInert = (on) => holdInert('job-panel', on ? document.querySelectorAll('[data-behind-modal]') : null);
 
 /**
  * 1 section, loaded page by page. Reloads every page shown so far whenever `refreshKey` changes
@@ -95,18 +90,6 @@ function TileGrid({ id, label, jobs, jobId, tileSize, onOpen, showState }) {
   // The section is 1 group (the hook takes days) with no header button.
   const groups = useMemo(() => [{ day: id, entries: items.map((item, index) => ({ item, index })) }], [id, items]);
   const nav = useRovingFocus(wrap, groups, items, noHeads, ({ item }) => onOpen(item.job.id));
-  // The section's last job left (e.g. in progress -> done) and "Nothing queued." replaces the
-  // tiles: a focused tile goes with them (focusout with no relatedTarget, then the grid is gone),
-  // so the focus goes to the section's own button rather than the page top.
-  const onFocusOut = (e) => {
-    nav.onFocusOut(e);
-    if (e.relatedTarget) return;
-    const grid = e.currentTarget; // not wrap.current: the ref is already cleared while it unmounts
-    const sectionButton = grid?.closest('section')?.querySelector('button[aria-controls]');
-    queueMicrotask(() => {
-      if (!grid?.isConnected && document.activeElement === document.body) sectionButton?.focus();
-    });
-  };
   return html`<div
     ref=${wrap}
     role="group"
@@ -115,7 +98,6 @@ function TileGrid({ id, label, jobs, jobId, tileSize, onOpen, showState }) {
     class="nav-grid grid grid-cols-[repeat(auto-fill,minmax(min(var(--tile),30vw),1fr))] gap-1"
     style=${{ '--tile': `${tileSize}px` }}
     onFocusIn=${nav.onFocusIn}
-    onFocusOut=${onFocusOut}
     onKeyDown=${nav.onKeyDown}
     onKeyUp=${nav.onKeyUp}
   >
@@ -179,12 +161,17 @@ function Section({ id, title, count, open, onToggle, extra, data, empty, childre
   </section>`;
 }
 
-/** Full-screen photo; click or Esc closes it. */
+/**
+ * Full-screen photo; click or Esc closes it. It sits inside the job panel's <dialog>: outside a
+ * modal one it would be inert.
+ */
 function Enlarged({ job, onClose }) {
   useEffect(() => {
     const onKey = (e) => {
       if (e.key !== 'Escape') return;
-      e.stopPropagation(); // only this, not the side panel too
+      // Only this, not the side panel too (nor, as a modal dialog, its own Esc).
+      e.stopPropagation();
+      e.preventDefault();
       onClose();
     };
     addEventListener('keydown', onKey, true);
@@ -294,7 +281,10 @@ function Detail({ job, closing, memberName, readOnly, onRetry, onClose }) {
     document.documentElement.classList.add('max-lg:overflow-hidden');
     return () => document.documentElement.classList.remove('max-lg:overflow-hidden');
   }, []);
-  // Below lg the panel covers the page: a modal dialog then. Resizing across lg switches it.
+  // A <dialog>: below lg it covers the page as a modal one (the browser makes the page behind
+  // inert and keeps Tab inside); from lg it is a side panel beside the page, not modal. Resizing
+  // across lg reopens it the other way.
+  const dialog = useRef(null);
   const [wide, setWide] = useState(() => matchMedia(WIDE).matches);
   useEffect(() => {
     const mq = matchMedia(WIDE);
@@ -302,15 +292,31 @@ function Detail({ job, closing, memberName, readOnly, onRetry, onClose }) {
     mq.addEventListener('change', update);
     return () => mq.removeEventListener('change', update);
   }, []);
-  const modal = !wide && !closing;
   useEffect(() => {
-    if (!modal) return;
-    setBehindInert(true);
-    return () => setBehindInert(false);
-  }, [modal]);
+    const d = dialog.current;
+    if (d.open) d.close();
+    if (wide) d.show();
+    else d.showModal();
+    heading.current?.focus({ preventScroll: true });
+  }, [wide]);
+  // Gone (after sliding out): the focus goes back to the job's tile, for keyboard users.
+  const jobId = useRef(job.id);
+  jobId.current = job.id;
+  useEffect(() => {
+    const d = dialog.current;
+    return () => {
+      d.close();
+      document.querySelector(`[data-job="${jobId.current}"]`)?.focus({ preventScroll: true });
+    };
+  }, []);
+  // Esc closes through onClose (it slides out and updates the URL), not the dialog's own Esc.
   useEffect(() => {
     if (closing) return;
-    const onKey = (e) => e.key === 'Escape' && onClose();
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      onClose();
+    };
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
   }, [onClose, closing]);
@@ -319,13 +325,13 @@ function Detail({ job, closing, memberName, readOnly, onRetry, onClose }) {
   const fact = (label, value) =>
     value && html`<div class="min-w-0"><dt class="text-[11px] uppercase tracking-wider text-neutral-500">${label}</dt><dd class="truncate text-sm" title=${value}>${value}</dd></div>`;
   return html`
-    <aside
+    <dialog
+      ref=${dialog}
       data-panel=${closing ? undefined : ''}
-      class=${`fixed inset-0 z-40 flex flex-col bg-neutral-900 shadow-2xl lg:inset-y-0 lg:left-auto lg:right-0 lg:z-30 lg:w-[28rem] lg:border-l lg:border-white/5 ${closing ? 'motion-safe:animate-panel-out' : 'motion-safe:animate-panel-in'}`}
-      role=${modal ? 'dialog' : undefined}
-      aria-modal=${modal ? 'true' : undefined}
+      class=${`fixed inset-0 z-40 m-0 size-full max-h-none max-w-none flex-col border-0 bg-neutral-900 p-0 text-neutral-100 shadow-2xl backdrop:bg-transparent open:flex lg:left-auto lg:right-0 lg:z-30 lg:w-[28rem] lg:border-l lg:border-white/5 ${closing ? 'motion-safe:animate-panel-out' : 'motion-safe:animate-panel-in'}`}
       aria-labelledby="job-detail-title"
       inert=${closing}
+      onCancel=${(e) => e.preventDefault()}
     >
       <div class="flex h-14 shrink-0 items-center gap-2 border-b border-white/5 pl-5 pr-2">
         <h2 id="job-detail-title" ref=${heading} tabindex="-1" class="min-w-0 flex-1 truncate text-[15px] font-semibold outline-none">
@@ -371,8 +377,8 @@ function Detail({ job, closing, memberName, readOnly, onRetry, onClose }) {
           onClick=${() => onRetry(job.id)}
         ><${Icon} name="refresh" class="size-4" />Retry</button>
       </div>`}
-    </aside>
-    ${enlarged && html`<${Enlarged} job=${job} onClose=${() => setEnlarged(false)} />`}`;
+      ${enlarged && html`<${Enlarged} job=${job} onClose=${() => setEnlarged(false)} />`}
+    </dialog>`;
 }
 
 /** jobId: the job shown in the side panel (from the URL); onSelectJob(id | null) changes it. */
@@ -409,14 +415,10 @@ export function QueuePage({ summary, members, tileSize, readOnly, onRetry, jobId
     }, PANEL_MS);
     return () => clearTimeout(t);
   }, [jobId]);
-  const close = useCallback(() => {
-    const id = jobId;
-    onSelectJob(null);
-    // Back to the tile it was opened from, for keyboard users. The page behind stops being inert
-    // now, not when the panel's effect cleans up (later): an inert tile can't take the focus.
-    setBehindInert(false);
-    setTimeout(() => document.querySelector(`[data-job="${id}"]`)?.focus({ preventScroll: true }));
-  }, [jobId, onSelectJob]);
+  const close = useCallback(() => onSelectJob(null), [onSelectJob]);
+  // A section's last job left while its tile had the focus (e.g. in progress -> done: "Nothing
+  // queued." replaces the tiles): the focus goes to the section's own button.
+  const onFocusIn = useLostFocus(({ section }) => section?.querySelector('button[aria-controls]')?.focus());
 
   const memberName = (id) => members.find((m) => m.id === id)?.name ?? null;
   const tiles = (id, label, jobs, showState) =>
@@ -432,7 +434,7 @@ export function QueuePage({ summary, members, tileSize, readOnly, onRetry, jobId
   }
 
   return html`
-    <div class="pb-8" data-behind-modal>
+    <div class="pb-8" onFocusIn=${onFocusIn}>
       <${Section} id="failed" title="Failed" count=${summary?.failed.length} open=${open.failed} onToggle=${toggle('failed')} data=${failed} empty="Nothing failed.">
         <div class="grid grid-cols-[repeat(auto-fill,minmax(min(24rem,100%),1fr))] gap-2">
           ${failed.jobs?.map(

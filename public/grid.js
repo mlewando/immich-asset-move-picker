@@ -212,10 +212,12 @@ export function Grid({ items, selected, setSelected, isSelectable, tileSize, onS
   // A day has its "select this day" button when something in it can be selected.
   const hasHead = useCallback((entries) => entries.some((e) => isSelectable(e.item)), [isSelectable]);
   // Enter opens; Space selects (Shift+Space: range), or opens a photo that can't be selected.
+  // The last photo went with the focus on it: the page's content takes the focus.
+  const focusMain = () => document.getElementById('main')?.focus({ preventScroll: true });
   const nav = useRovingFocus(wrapRef, groups, items, hasHead, ({ item, index }, e) => {
     if (e.key === 'Enter' || !isSelectable(item)) onOpen(item.id);
     else onSelect(index, e.shiftKey);
-  });
+  }, focusMain);
   if (items.length === 0) {
     return html`<div class="flex flex-col items-center gap-2 py-20 text-center">
       <span class="grid size-14 place-items-center rounded-full bg-white/5 text-neutral-500"><${Icon} name="album" class="size-7" /></span>
@@ -237,7 +239,6 @@ export function Grid({ items, selected, setSelected, isSelectable, tileSize, onS
       onPointerDown=${onPointerDown}
       onClickCapture=${onClickCapture}
       onFocusIn=${nav.onFocusIn}
-      onFocusOut=${nav.onFocusOut}
       onKeyDown=${nav.onKeyDown}
       onKeyUp=${nav.onKeyUp}
     >

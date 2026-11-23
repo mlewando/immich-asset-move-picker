@@ -10,7 +10,6 @@ import { Icon } from './icons.js';
 import { keepAlive } from './expiry.js';
 import { JobsIndicator, StorageTemplateReminder, useJobs } from './jobs.js';
 import { QueuePage } from './queue.js';
-import { holdInert } from './inert.js';
 import { focusNav } from './roving.js';
 import { addRange, fileCount, selectAll, toggleDay, toggleOne } from './selection.js';
 import { startMember } from './start.js';
@@ -229,33 +228,45 @@ const Logo = () => html`<div class="flex h-14 shrink-0 items-center gap-3 px-3">
 
 function Sidebar(props) {
   const { collapsed, drawerOpen, onCloseDrawer, onToggle } = props;
-  // The drawer (phone): Esc or a tap beside it closes it.
+  // The drawer (phone) is a modal <dialog>: the browser makes the page behind inert, keeps Tab
+  // inside, closes it on Esc and gives the focus back to the Menu button. A tap beside it closes
+  // it too; from md up it isn't shown, so it closes there.
+  const drawer = useRef(null);
   useEffect(() => {
-    if (!drawerOpen) return;
-    const onKey = (e) => e.key === 'Escape' && onCloseDrawer();
-    addEventListener('keydown', onKey);
-    document.querySelector('#drawer a, #drawer button')?.focus();
-    return () => removeEventListener('keydown', onKey);
+    const d = drawer.current;
+    if (!drawerOpen) {
+      if (d.open) d.close();
+      return;
+    }
+    if (!d.open) d.showModal();
+    const wide = matchMedia('(min-width: 48rem)'); // Tailwind's md
+    const onWide = () => wide.matches && onCloseDrawer();
+    wide.addEventListener('change', onWide);
+    return () => wide.removeEventListener('change', onWide);
   }, [drawerOpen]);
   return html`
     <aside
-      data-behind-modal
       class=${`sticky top-0 hidden h-dvh shrink-0 flex-col overflow-hidden whitespace-nowrap border-r border-white/5 bg-neutral-900/60 px-2 pb-2 transition-[width] duration-200 md:flex ${collapsed ? 'w-[4.5rem]' : 'w-64'}`}
     >
       <${Logo} />
       <${SidebarBody} ...${props} collapsed=${collapsed} onToggle=${onToggle} />
     </aside>
-    ${drawerOpen &&
-    html`<div class="fixed inset-0 z-50 md:hidden">
-      <div class="absolute inset-0 bg-black/60 motion-safe:animate-fade-in" onClick=${onCloseDrawer} />
-      <aside id="drawer" class="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col whitespace-nowrap bg-neutral-900 px-2 pb-2 shadow-2xl motion-safe:animate-drawer-in" role="dialog" aria-modal="true" aria-label="Menu">
+    <dialog
+      ref=${drawer}
+      class="fixed inset-y-0 left-0 m-0 h-dvh max-h-none w-72 max-w-[85vw] border-0 bg-neutral-900 p-0 text-neutral-100 shadow-2xl backdrop:bg-black/60 motion-safe:animate-drawer-in md:hidden"
+      aria-label="Menu"
+      onClose=${onCloseDrawer}
+      onClick=${(e) => e.target === e.currentTarget && onCloseDrawer()}
+    >
+      ${drawerOpen &&
+      html`<div class="flex h-full flex-col whitespace-nowrap px-2 pb-2">
         <div class="flex items-center">
           <div class="min-w-0 flex-1"><${Logo} /></div>
           <button class=${`mr-1 grid size-9 place-items-center rounded-full text-neutral-300 hover:bg-white/10 ${focusRing}`} onClick=${onCloseDrawer} aria-label="Close menu"><${Icon} name="close" /></button>
         </div>
         <${SidebarBody} ...${props} collapsed=${false} onNavigate=${onCloseDrawer} onToggle=${null} />
-      </aside>
-    </div>`}`;
+      </div>`}
+    </dialog>`;
 }
 
 // --- top bar: menu, title + zoom, or the selection actions -----------------------------------
@@ -280,7 +291,7 @@ function TopBar({ title, count, selectedCount, selectedFiles, action, tileSize, 
   }
   return html`
     <header class=${`${bar} bg-neutral-950`}>
-      <button data-menu-button class=${`${iconBtn} md:hidden`} onClick=${onMenu} aria-label="Menu" title="Menu"><${Icon} name="menu" /></button>
+      <button class=${`${iconBtn} md:hidden`} onClick=${onMenu} aria-label="Menu" title="Menu"><${Icon} name="menu" /></button>
       <div class="min-w-16 flex-1 truncate">
         <h1 class="inline text-base font-semibold">${title}</h1>
         ${count !== null && html`<span class="ml-2 hidden text-sm text-neutral-500 @2xl:inline">${count} items</span>`}
@@ -581,20 +592,6 @@ function App() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const onMenu = useCallback(() => setDrawerOpen(true), []);
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
-  // The phone menu is modal: what it covers is inert while it is open, and closing it gives the
-  // focus back to the Menu button. From md up it is not shown, so it closes there.
-  useEffect(() => {
-    if (!drawerOpen) return;
-    holdInert('menu', document.querySelectorAll('[data-behind-modal], #main'));
-    const wide = matchMedia('(min-width: 48rem)');
-    const onWide = () => wide.matches && setDrawerOpen(false);
-    wide.addEventListener('change', onWide);
-    return () => {
-      wide.removeEventListener('change', onWide);
-      holdInert('menu', null);
-      if (!wide.matches) document.querySelector('[data-menu-button]')?.focus(); // hidden from md up
-    };
-  }, [drawerOpen]);
 
   // On a timeline: Esc clears the selection, Ctrl/Cmd+A selects every photo. Not while
   // something is open on top (viewer, menu, a dropdown: their own Esc closes them first). The
@@ -608,7 +605,7 @@ function App() {
       const all = (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'a';
       if (!esc && !all) return;
       const { items, selected, isSelectable, on } = keyState.current;
-      if (!on || document.querySelector('[role="dialog"]')) return;
+      if (!on || document.querySelector('[role="dialog"], dialog[open]')) return;
       if (esc && selected.size > 0) {
         clearSelection(true);
       } else if (all && !e.target.closest?.('input, textarea, select, [contenteditable]')) {
@@ -648,7 +645,6 @@ function App() {
     <div class="flex min-h-dvh" inert=${viewerOpen}>
       <a
         href="#main"
-        data-behind-modal
         class="fixed left-2 top-2 z-50 -translate-y-20 rounded-full bg-sky-500 px-4 py-2 text-sm font-semibold text-white outline-none focus:translate-y-0 focus-visible:ring-2 focus-visible:ring-sky-200"
         onClick=${skipTo}
       >${route.kind === 'queue' ? 'Skip to queue' : 'Skip to photos'}</a>
@@ -663,27 +659,25 @@ function App() {
         onCloseDrawer=${closeDrawer}
       />
       <div class="min-w-0 flex-1 lg:has-[[data-panel]]:pr-[28rem]">
-        <div class="contents" data-behind-modal>
-          <${TopBar}
-            title=${title}
-            count=${onTimeline ? items.length : null}
-            selectedCount=${selected.size}
-            selectedFiles=${selected.size ? fileCount(items ?? [], selected) : 0}
-            action=${action}
-            tileSize=${tileSize}
-            setTileSize=${setTileSize}
-            onClear=${(e) => clearSelection(e.detail === 0)}
-            onMenu=${onMenu}
-            jobs=${html`<${JobsIndicator} summary=${summary} readOnly=${readOnly} onRetry=${onRetry} onOpenJob=${openJob} onOpenQueue=${openQueue} />`}
-          />
-          ${route.kind === 'member' && html`<${FilterBar} albums=${albums} filter=${route.filter} onChange=${onFilter} />`}
-          <${StorageTemplateReminder} count=${movedCount} onDismiss=${() => setMovedCount(0)} />
-          ${status?.readOnly &&
-          html`<div class="flex items-start gap-2 border-b border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-200" role="alert">
-            <${Icon} name="alert" class="mt-0.5 size-4 shrink-0" />
-            <span><strong class="font-semibold">Read-only.</strong> ${status.problems.join(' • ')}</span>
-          </div>`}
-        </div>
+        <${TopBar}
+          title=${title}
+          count=${onTimeline ? items.length : null}
+          selectedCount=${selected.size}
+          selectedFiles=${selected.size ? fileCount(items ?? [], selected) : 0}
+          action=${action}
+          tileSize=${tileSize}
+          setTileSize=${setTileSize}
+          onClear=${(e) => clearSelection(e.detail === 0)}
+          onMenu=${onMenu}
+          jobs=${html`<${JobsIndicator} summary=${summary} readOnly=${readOnly} onRetry=${onRetry} onOpenJob=${openJob} onOpenQueue=${openQueue} />`}
+        />
+        ${route.kind === 'member' && html`<${FilterBar} albums=${albums} filter=${route.filter} onChange=${onFilter} />`}
+        <${StorageTemplateReminder} count=${movedCount} onDismiss=${() => setMovedCount(0)} />
+        ${status?.readOnly &&
+        html`<div class="flex items-start gap-2 border-b border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-200" role="alert">
+          <${Icon} name="alert" class="mt-0.5 size-4 shrink-0" />
+          <span><strong class="font-semibold">Read-only.</strong> ${status.problems.join(' • ')}</span>
+        </div>`}
         <main id="main" tabindex="-1" class="px-2 pb-24 outline-none sm:px-4">
           ${route.kind === 'queue' &&
           html`<${QueuePage}
