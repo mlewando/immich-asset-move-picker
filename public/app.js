@@ -8,7 +8,9 @@ import { FilterBar } from './filters.js';
 import { Grid } from './grid.js';
 import { Icon } from './icons.js';
 import { keepAlive } from './expiry.js';
+import { ConfirmDialog } from './confirm.js';
 import { CheckAgain, JobsIndicator, StorageTemplateReminder, useJobs } from './jobs.js';
+import { giveBackQuestion, queuedMessage } from './messages.js';
 import { QueuePage } from './queue.js';
 import { focusNav } from './roving.js';
 import { addRange, fileCount, selectAll, toggleDay, toggleOne } from './selection.js';
@@ -223,7 +225,7 @@ function SidebarBody({ members, route, user, jobs, collapsed, onNavigate, onTogg
 
 const Logo = () => html`<div class="flex h-14 shrink-0 items-center gap-3 px-3">
   <div class="grid size-8 shrink-0 place-items-center rounded-lg bg-sky-500 text-white"><${Icon} name="family" class="size-5" /></div>
-  <span class="truncate text-base font-semibold tracking-tight">Family picker</span>
+  <span class="truncate text-base font-semibold tracking-tight">${APP_NAME}</span>
 </div>`;
 
 function Sidebar(props) {
@@ -308,9 +310,29 @@ function TopBar({ title, count, selectedCount, selectedFiles, action, tileSize, 
     </header>`;
 }
 
+/** Right under the top bar: 1 plain line; what the guard found shows on request. */
+function ReadOnlyBanner({ problems, checking, onCheckAgain }) {
+  const [open, setOpen] = useState(false);
+  return html`<div class="border-b border-amber-500/20 bg-amber-500/10 px-4 py-2 text-sm text-amber-200" role="alert">
+    <div class="flex items-center gap-2">
+      <${Icon} name="alert" class="size-4 shrink-0" />
+      <span class="min-w-0 flex-1 truncate"><strong class="font-semibold">Read-only.</strong> Moving is switched off for now.</span>
+      <button
+        class="shrink-0 rounded-full px-3 py-1 text-xs font-medium text-amber-100 outline-none hover:bg-amber-500/20 focus-visible:ring-2 focus-visible:ring-sky-400"
+        aria-expanded=${open}
+        aria-controls="read-only-details"
+        onClick=${() => setOpen(!open)}
+      >${open ? 'Hide details' : 'Details'}</button>
+      <${CheckAgain} checking=${checking} onClick=${onCheckAgain} />
+    </div>
+    ${open && html`<p id="read-only-details" class="mt-1.5 break-words pl-6 text-amber-200/90">${problems.join(' • ')}</p>`}
+  </div>`;
+}
+
 // --- app -----------------------------------------------------------------------------------
 const STATUS_POLL_MS = 10_000; // the read-only state (the guard runs at start and before each job)
 const TOAST_MS = 6000;
+const TOAST_ACTION_MS = 12_000; // long enough to reach for its button
 
 /**
  * The grid's photos and the selection in them. Another grid (member, filter, family) starts
@@ -357,12 +379,15 @@ function useGrid(route) {
   return { gridKey, items, error, setError, selected, setSelected, anchor, reload, drop };
 }
 
-/** A short message at the bottom ({ kind: 'ok' | 'warn' | 'error', text }), gone after TOAST_MS. */
+/**
+ * A short message at the bottom ({ kind: 'ok' | 'warn' | 'error', text, action?: { label, run } }),
+ * gone after TOAST_MS (longer with an action).
+ */
 function useToast() {
   const [toast, setToast] = useState(null);
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(() => setToast(null), TOAST_MS);
+    const t = setTimeout(() => setToast(null), toast.action ? TOAST_ACTION_MS : TOAST_MS);
     return () => clearTimeout(t);
   }, [toast]);
   return [toast, setToast];
@@ -371,7 +396,7 @@ function useToast() {
 const LAST_MEMBER_KEY = 'picker.lastMember';
 const MAX_PER_REQUEST = 10_000; // the server's maxItems for a Move / Give back (src/server.ts)
 const TOO_MANY = `Up to ${MAX_PER_REQUEST} photos at a time`;
-const APP_NAME = 'Family picker';
+const APP_NAME = 'Family photo picker';
 
 /** The grid's Tab stop (its current photo or day button), else the page's content. */
 function focusPhotos() {
@@ -470,17 +495,8 @@ function App() {
 
   const readOnly = status?.readOnly ?? true;
   const tooMany = selected.size > MAX_PER_REQUEST;
-  const runSelected = useCallback(async (e) => {
-    if (tooMany) {
-      setToast({ kind: 'warn', text: TOO_MANY });
-      return;
-    }
-    // A click made with the keyboard has detail 0.
-    const byKeyboard = e?.detail === 0;
-    const ids = [...selected];
-    // Give back deletes family copies (each has an original that goes back first): ask once.
-    const ask = `Give back ${ids.length} photo${ids.length === 1 ? '' : 's'}? The originals return to the members' timelines and these family copies are deleted.`;
-    if (route.kind === 'family' && !confirm(ask)) return;
+  const [asking, setAsking] = useState(null); // the Give back question while open: { ids, byKeyboard }
+  const queue = useCallback(async (ids, byKeyboard) => {
     try {
       const r = route.kind === 'family' ? await api.giveBack(ids) : await api.move(route.id, ids);
       // Queued now or already: either way each has an unfinished job, so it leaves the grid.
@@ -489,14 +505,29 @@ function App() {
       // What can't be moved shows up as failed in the jobs indicator (the worker decides).
       // The files of what this click queued, when more than its photos (live photos, stacks).
       const files = fileCount(items, r.queuedIds);
-      const parts = [`${r.queued} queued${files > r.queued ? ` (${files} files)` : ''}`];
-      if (r.alreadyQueued) parts.push(`${r.alreadyQueued} already queued`);
-      setToast({ kind: 'ok', text: parts.join(' • ') });
+      setToast({
+        kind: 'ok',
+        text: queuedMessage(items, r, files),
+        action: { label: 'View in queue', run: () => navigate('/queue') },
+      });
       refreshJobs();
     } catch (e) {
       setToast({ kind: 'error', text: e.message });
     }
-  }, [selected, items, tooMany, route.kind, route.id, refreshJobs, drop]);
+  }, [items, route.kind, route.id, refreshJobs, drop]);
+  const runSelected = useCallback((e) => {
+    // Over the limit: say so before any question.
+    if (tooMany) {
+      setToast({ kind: 'warn', text: TOO_MANY });
+      return;
+    }
+    // A click made with the keyboard has detail 0.
+    const byKeyboard = e?.detail === 0;
+    const ids = [...selected];
+    // Give back deletes family copies (each has an original that goes back first): ask once.
+    if (route.kind === 'family') setAsking({ ids, byKeyboard });
+    else queue(ids, byKeyboard);
+  }, [selected, tooMany, route.kind, queue]);
   const action = {
     label: route.kind === 'family' ? 'Give back' : 'Move to family',
     disabled: readOnly,
@@ -666,7 +697,14 @@ function App() {
         toast.kind === 'error' ? 'bg-rose-600 text-white' : toast.kind === 'warn' ? 'bg-amber-500 text-neutral-950' : 'bg-neutral-100 text-neutral-900'
       }`}
       role="status"
-    >${toast.text}</div>`;
+    ><span>${toast.text}</span>${toast.action &&
+      html`<button
+        class="ml-3 rounded-full bg-black/15 px-3 py-0.5 text-xs font-semibold outline-none hover:bg-black/25 focus-visible:ring-2 focus-visible:ring-sky-500"
+        onClick=${() => {
+          toast.action.run();
+          setToast(null);
+        }}
+      >${toast.action.label}</button>`}</div>`;
   const skipTo = (e) => {
     e.preventDefault();
     focusPhotos(); // the queue page has no grid: its content
@@ -703,14 +741,9 @@ function App() {
           onMenu=${onMenu}
           jobs=${html`<${JobsIndicator} summary=${summary} readOnly=${readOnly} checking=${checking} onCheckAgain=${onCheckAgain} onRetry=${onRetry} onOpenJob=${openJob} onOpenQueue=${openQueue} />`}
         />
+        ${status?.readOnly && html`<${ReadOnlyBanner} problems=${status.problems} checking=${checking} onCheckAgain=${onCheckAgain} />`}
         ${route.kind === 'member' && html`<${FilterBar} albums=${albums} filter=${route.filter} onChange=${onFilter} />`}
         <${StorageTemplateReminder} count=${movedCount} onDismiss=${() => setMovedCount(0)} />
-        ${status?.readOnly &&
-        html`<div class="flex items-start gap-2 border-b border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-200" role="alert">
-          <${Icon} name="alert" class="mt-0.5 size-4 shrink-0" />
-          <span class="min-w-0 flex-1 break-words"><strong class="font-semibold">Read-only.</strong> ${status.problems.join(' • ')}</span>
-          <${CheckAgain} checking=${checking} onClick=${onCheckAgain} />
-        </div>`}
         <main id="main" tabindex="-1" class="px-2 pb-24 outline-none sm:px-4">
           ${route.kind === 'queue' &&
           html`<${QueuePage}
@@ -745,6 +778,18 @@ function App() {
       </div>
     </div>
     ${toastView}
+    ${asking &&
+    html`<${ConfirmDialog}
+      title=${giveBackQuestion(asking.ids.length)}
+      text="The originals return to the members’ timelines and these family copies are deleted."
+      confirmLabel="Give back"
+      onCancel=${() => setAsking(null)}
+      onConfirm=${() => {
+        const { ids, byKeyboard } = asking;
+        setAsking(null);
+        queue(ids, byKeyboard);
+      }}
+    />`}
     <div class="sr-only" aria-live="polite">${announcement}</div>
     ${viewerOpen &&
     html`<${Viewer}

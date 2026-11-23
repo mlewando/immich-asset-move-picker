@@ -14,6 +14,7 @@ import { isIP } from 'node:net';
 import fastifySession from '@fastify/session';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import * as client from 'openid-client';
+import { APP_NAME } from './app-name.ts';
 import type { Credentials, CredentialStore, Identity } from './oidc-credentials.ts';
 import { sessionKey } from './session-store.ts';
 import type { Sessions } from './sessions.ts';
@@ -499,10 +500,10 @@ export function sendNotice(reply: FastifyReply, { status, message, hint, link }:
     .type('text/html; charset=utf-8')
     .send(
       '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
-        '<meta name="viewport" content="width=device-width, initial-scale=1"><title>Family photo picker</title>' +
+        '<meta name="viewport" content="width=device-width, initial-scale=1"><title>' + APP_NAME + '</title>' +
         '<link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/app.css"></head>' +
         '<body><main class="notice"><img class="notice-icon" src="/favicon.svg" alt="">' +
-        '<h1 class="notice-title">Family photo picker</h1>' +
+        '<h1 class="notice-title">' + APP_NAME + '</h1>' +
         `<p class="notice-text">${escapeHtml(message)}</p>` +
         (hint ? `<p class="notice-hint">${escapeHtml(hint)}</p>` : '') +
         `<a class="notice-link" href="${escapeHtml(link.href)}">${escapeHtml(link.text)}</a></main></body></html>`,

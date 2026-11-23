@@ -1,4 +1,4 @@
-// Full-screen viewer: ←/→ move, Space selects, Esc (or the browser's Back) closes. It takes the
+// Full-screen viewer: ←/→ (or a swipe on a touch screen) move, Space selects, Esc (or the browser's Back) closes. It takes the
 // keyboard focus when it opens; the page behind is inert meanwhile (app.js), so Tab stays inside.
 import { h } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
@@ -7,6 +7,7 @@ import { media } from './api.js';
 import { MediaBadges, StatusBadges } from './grid.js';
 import { CheckCircle, Icon } from './icons.js';
 import { expiry } from './expiry.js';
+import { swipeStep } from './swipe.js';
 
 const html = htm.bind(h);
 
@@ -55,6 +56,28 @@ export function Viewer({ items, index, selected, isSelectable, onClose, onNav, o
     return () => removeEventListener('keydown', onKey);
   }, [item, onClose, onNav, onToggle, isSelectable]);
 
+  // Touch: a horizontal swipe moves between photos. A 2nd finger (pinch) cancels it; a swipe that
+  // starts on a video is left to its seek bar.
+  const touch = useRef({ fingers: 0, x: 0, y: 0, ok: false });
+  const onPointerDown = (e) => {
+    if (e.pointerType === 'mouse') return;
+    const t = touch.current;
+    t.fingers++;
+    t.ok = t.fingers === 1 && !e.target.closest('video');
+    t.x = e.clientX;
+    t.y = e.clientY;
+  };
+  const onPointerEnd = (e) => {
+    if (e.pointerType === 'mouse') return;
+    const t = touch.current;
+    t.fingers = Math.max(0, t.fingers - 1);
+    if (t.ok && e.type === 'pointerup') {
+      const step = swipeStep(e.clientX - t.x, e.clientY - t.y);
+      if (step) onNav(step);
+    }
+    t.ok = false;
+  };
+
   if (!item) return null;
   const isSelected = selected.has(item.id);
   const fit = 'max-h-full max-w-full object-contain';
@@ -68,7 +91,7 @@ export function Viewer({ items, index, selected, isSelectable, onClose, onNav, o
   }
 
   return html`
-    <div ref=${root} tabindex="-1" class="group/viewer fixed inset-0 z-50 bg-black outline-none" role="dialog" aria-modal="true" aria-label=${item.fileName} onClick=${onClick}>
+    <div ref=${root} tabindex="-1" class="group/viewer fixed inset-0 z-50 touch-pan-y bg-black outline-none" role="dialog" aria-modal="true" aria-label=${item.fileName} onClick=${onClick} onPointerDown=${onPointerDown} onPointerUp=${onPointerEnd} onPointerCancel=${onPointerEnd}>
       <div class="absolute inset-0 flex items-center justify-center p-2 pt-16">${body}</div>
 
       <div class="absolute inset-x-0 top-0 flex items-center gap-3 bg-gradient-to-b from-black/80 to-transparent px-3 py-2">

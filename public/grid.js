@@ -260,14 +260,13 @@ export function Grid({ items, selected, setSelected, isSelectable, tileSize, onS
                     title=${allIn ? 'Unselect this day' : 'Select this day'}
                     onClick=${() => onDay(entries.map((e) => e.item))}
                   >
-                    <span class=${`flex transition-opacity ${allIn ? 'opacity-100' : 'opacity-0 group-hover/day:opacity-100 [.selecting_&]:opacity-100'}`}>
-                      <${CheckCircle} on=${allIn} class="size-5" />
-                    </span>
                     <span>${dayLabel(day)}</span>
                     ${count}
+                    <span class=${`flex transition-opacity ${allIn ? 'opacity-100' : 'opacity-0 group-hover/day:opacity-100 [.selecting_&]:opacity-100 group-focus-within/label:opacity-100'}`}>
+                      <${CheckCircle} on=${allIn} class="size-5" />
+                    </span>
                   </button>`
-                : html`<span class="inline-flex items-center gap-2 px-1.5 py-1">
-                    <span class="size-5" />
+                : html`<span class="inline-flex items-center gap-2 py-1">
                     <span>${dayLabel(day)}</span>
                     ${count}
                   </span>`}
