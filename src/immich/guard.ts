@@ -10,6 +10,10 @@ import { isTransient } from './errors.ts';
 // coming back soon, and a long wait would only delay that.
 export const VERSION_RECHECK_MS = 15_000;
 
+// The guard's database queries are small catalog reads. One with no answer by then (Postgres
+// frozen, connection dead) fails the check instead of holding up every check after it.
+export const GUARD_QUERY_TIMEOUT_MS = 5_000;
+
 // Each version tested on its own (integration tests against it), not a semver range: a later
 // patch of an older minor sorts inside a range like "3.3.5 to 3.4.1" but is untested.
 export const SUPPORTED_IMMICH_VERSIONS: readonly string[] = ['3.4.1'];
