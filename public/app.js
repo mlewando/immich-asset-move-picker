@@ -471,12 +471,12 @@ function App() {
     setChecking(true);
     try {
       const r = await api.recheck();
-      setStatus((s) => ({ ...s, ...r }));
+      setStatus((s) => ({ ...s, readOnly: r.readOnly, problems: r.problems }));
       await refreshJobs();
       setToast(
         r.readOnly
           ? { kind: 'warn', text: 'Still not working' }
-          : { kind: 'ok', text: r.busy ? 'Working again; moves continue after the current step' : 'Working again: moves resumed' },
+          : { kind: 'ok', text: r.busy ? 'Working again: moves continue after the current step' : 'Working again: moves resumed' },
       );
     } catch (e) {
       setToast({ kind: 'error', text: e.message });

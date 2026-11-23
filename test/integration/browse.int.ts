@@ -45,6 +45,8 @@ const byName = (items: GridItem[]) => new Map(items.map((i) => [i.fileName, i]))
 test('a hung query times out on a pool with a query timeout, not on one without', async () => {
   const guardDb = createDb(config.db, { max: 1, queryTimeoutMs: 1000 });
   try {
+    // Postgres cancels it too, so an abandoned query doesn't keep running there.
+    assert.deepEqual(await guardDb.query('SHOW statement_timeout'), [{ statement_timeout: '1s' }]);
     const started = Date.now();
     const [timed, untimed] = await Promise.allSettled([
       guardDb.query('SELECT pg_sleep(3)'),

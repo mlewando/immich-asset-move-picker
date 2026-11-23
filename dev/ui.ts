@@ -404,13 +404,14 @@ const worker = {
   async recheck() {
     const w = world;
     await sleep(1_500);
-    const found = worker.state();
     if (w === world && w.recheckFails !== undefined && w.recheckFails-- <= 0) {
       w.paused = undefined;
       w.guard = undefined;
+      const found = worker.state();
       worker.kick();
+      return found;
     }
-    return found;
+    return worker.state();
   },
 };
 setInterval(() => worker.kick(), 5_000).unref();

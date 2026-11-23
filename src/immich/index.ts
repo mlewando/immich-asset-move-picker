@@ -97,8 +97,8 @@ export function createImmich(cfg: {
   log?: { error(msg: string): void };
 }): Immich {
   const db = createDb(cfg.db);
-  // The guard's own connection: busy timeline queries can't keep it from
-  // a connection, and a hung query of its own times out (a slow timeline query on `db` must not).
+  // The guard's own connection: busy timeline queries can't keep it waiting for one, and a hung
+  // query of its own times out (a slow timeline query on `db` must not).
   const guardDb = createDb(cfg.db, { max: 1, queryTimeoutMs: GUARD_QUERY_TIMEOUT_MS });
   const api = createImmichApi(cfg.immich.apiUrl, cfg.immich.familyApiKey);
   const log = cfg.log ?? { error: (m: string) => console.error(m) };
