@@ -83,7 +83,7 @@ export function AlbumPicker({ albums, value, onChange }) {
         <label class="flex items-center gap-2 rounded-lg bg-white/5 px-2.5 focus-within:ring-2 focus-within:ring-sky-400">
           <${Icon} name="magnify" class="size-4 shrink-0 text-neutral-400" />
           <input
-            class="w-full bg-transparent py-2 text-sm outline-none placeholder:text-neutral-500"
+            class="w-full bg-transparent py-2 text-sm outline-none placeholder:text-neutral-400"
             placeholder=${`Search ${albums.length} album${albums.length === 1 ? '' : 's'}`}
             role="combobox"
             aria-expanded="true"
@@ -96,7 +96,7 @@ export function AlbumPicker({ albums, value, onChange }) {
         </label>
       </div>
       <ul id="album-options" role="listbox" aria-label="Albums" class="min-h-0 flex-1 overflow-y-auto py-1 sm:max-h-96">
-        ${options.length === 0 && html`<li class="px-4 py-6 text-center text-sm text-neutral-500">No album matches.</li>`}
+        ${options.length === 0 && html`<li class="px-4 py-6 text-center text-sm text-neutral-400">No album matches.</li>`}
         ${options.map(
           (a, i) => html`<li
             key=${a.id || 'all'}
@@ -109,7 +109,7 @@ export function AlbumPicker({ albums, value, onChange }) {
           >
             <span class="min-w-0 flex-1">
               <span class="block truncate text-sm">${a.name}</span>
-              ${a.from && html`<span class="block text-xs text-neutral-500">${dayRange(a.from, a.to)} • ${a.count} photo${a.count === 1 ? '' : 's'}</span>`}
+              ${a.from && html`<span class="block text-xs text-neutral-400">${dayRange(a.from, a.to)} • ${a.count} photo${a.count === 1 ? '' : 's'}</span>`}
             </span>
             ${a.id === value && html`<${Icon} name="check" class="size-4 shrink-0 text-sky-400" />`}
           </li>`,

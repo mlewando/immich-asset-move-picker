@@ -41,8 +41,8 @@ export function MediaBadges({ item }) {
 export function StatusBadges({ item }) {
   const tag = 'rounded-md px-1.5 py-0.5 text-[11px] font-medium leading-none text-white';
   return html`
-    ${item.inFamily && html`<span class=${`${tag} bg-emerald-600/90`} title="Same bytes already in the family account">in family</span>`}
-    ${item.edited && html`<span class=${`${tag} bg-amber-600/90`} title="Crop/rotate/mirror done in Immich are not carried to the family copy">edits not carried</span>`}
+    ${item.inFamily && html`<span class=${`${tag} bg-emerald-700`} title="Same bytes already in the family account">in family</span>`}
+    ${item.edited && html`<span class=${`${tag} bg-amber-700`} title="Crop/rotate/mirror done in Immich are not carried to the family copy">edits not carried</span>`}
     ${item.noOrigin && html`<span class=${`${tag} bg-neutral-600/90`} title="No original to give back to">no origin</span>`}`;
 }
 
@@ -220,9 +220,9 @@ export function Grid({ items, selected, setSelected, isSelectable, tileSize, onS
   }, focusMain);
   if (items.length === 0) {
     return html`<div class="flex flex-col items-center gap-2 py-20 text-center">
-      <span class="grid size-14 place-items-center rounded-full bg-white/5 text-neutral-500"><${Icon} name="album" class="size-7" /></span>
+      <span class="grid size-14 place-items-center rounded-full bg-white/5 text-neutral-400"><${Icon} name="album" class="size-7" /></span>
       <p class="text-base font-medium text-neutral-300">${empty?.[0] ?? 'No photos here'}</p>
-      ${empty?.[1] && html`<p class="max-w-sm text-sm text-neutral-500">${empty[1]}</p>`}
+      ${empty?.[1] && html`<p class="max-w-sm text-sm text-neutral-400">${empty[1]}</p>`}
     </div>`;
   }
   // Immich's thumbnails are ~250 px; bigger tiles use the preview so they stay sharp.
@@ -247,7 +247,7 @@ export function Grid({ items, selected, setSelected, isSelectable, tileSize, onS
       ${groups.map(({ day, entries }) => {
         const dayItems = entries.map((e) => e.item).filter(isSelectable);
         const allIn = dayItems.length > 0 && dayItems.every((i) => selected.has(i.id));
-        const count = html`<span class="text-xs font-normal text-neutral-500">${entries.length}<span class="sr-only">${entries.length === 1 ? ' item' : ' items'}</span></span>`;
+        const count = html`<span class="text-xs font-normal text-neutral-400">${entries.length}<span class="sr-only">${entries.length === 1 ? ' item' : ' items'}</span></span>`;
         return html`
           <section class="day group/day" key=${day}>
             <h2 class="pb-2 pt-5 text-sm font-medium text-neutral-300">
