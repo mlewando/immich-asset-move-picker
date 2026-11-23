@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
 import { api } from './api.js';
 import { FilterBar } from './filters.js';
-import { Grid } from './grid.js';
+import { focusNav, Grid } from './grid.js';
 import { Icon } from './icons.js';
 import { keepAlive } from './expiry.js';
 import { JobsIndicator, StorageTemplateReminder, useJobs } from './jobs.js';
@@ -367,13 +367,6 @@ const MAX_PER_REQUEST = 10_000; // the server's maxItems for a Move / Give back 
 const TOO_MANY = `Up to ${MAX_PER_REQUEST} photos at a time`;
 const APP_NAME = 'Family picker';
 
-/** Focuses a photo's (or day's) grid button and scrolls it into view. */
-function focusNav(el) {
-  el.focus({ preventScroll: true });
-  // The tile, not its button: the tile's scroll margin keeps it clear of the sticky top bar.
-  (el.closest('.tile') ?? el).scrollIntoView({ block: 'nearest' });
-}
-
 /** The grid's Tab stop (its current photo or day button), else the page's content. */
 function focusPhotos() {
   const el = document.querySelector('[data-photos] [data-nav][tabindex="0"]');
@@ -382,11 +375,8 @@ function focusPhotos() {
 }
 
 // Whether the focus is about to be lost: it is on the top bar, whose buttons change with the
-// selection, or already nowhere.
-const focusOnTopBar = () => {
-  const a = document.activeElement;
-  return !a || a === document.body || !!a.closest('header');
-};
+// selection. (Not when it is nowhere: a mouse user's page must not jump to the grid.)
+const focusOnTopBar = () => !!document.activeElement?.closest('header');
 
 function App() {
   const route = useRoute();
@@ -608,8 +598,10 @@ function App() {
       } else if (all && !e.target.closest?.('input, textarea, select, [contenteditable]')) {
         // (in a field: the field's own select-all)
         e.preventDefault();
-        refocusIf(true); // the top bar swaps to the selection bar: its zoom buttons go
-        setSelected(selectAll(items, isSelectable));
+        const next = selectAll(items, isSelectable);
+        // A 1st selection swaps the top bar to the selection bar: its zoom buttons go.
+        if (selected.size === 0 && next.size > 0) refocusIf(true);
+        setSelected(next);
       }
     };
     addEventListener('keydown', onKey);

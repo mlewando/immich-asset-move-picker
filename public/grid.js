@@ -205,6 +205,13 @@ function useMarquee(wrapRef, selected, setSelected) {
 
 const NAV_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']);
 
+/** Focuses a photo's (or day's) grid button and scrolls it into view. */
+export function focusNav(el) {
+  el.focus({ preventScroll: true });
+  // The tile, not its button: the tile's scroll margin keeps it clear of the sticky top bar.
+  (el.closest('.tile') ?? el).scrollIntoView({ block: 'nearest' });
+}
+
 /**
  * The grid's 1 Tab stop (roving tabindex): a photo id or dayKey(day). It follows the focus.
  * When its photo or day button goes (a job moved it, a reload), tabStop() picks the next one,
@@ -234,10 +241,7 @@ function useRovingFocus(wrapRef, groups, items, isSelectable, onSelect, onOpen) 
   const elementOf = (key) => wrapRef.current?.querySelector(`[data-nav="${CSS.escape(key)}"]`);
   const focusKey = (key) => {
     const el = elementOf(key);
-    if (!el) return;
-    el.focus({ preventScroll: true });
-    // The tile, not its button: the tile's scroll margin keeps it clear of the sticky top bar.
-    (el.closest('.tile') ?? el).scrollIntoView({ block: 'nearest' });
+    if (el) focusNav(el);
   };
 
   // The Tab stop moved off a photo or day button that went: the focus follows if it was in the grid.
@@ -260,13 +264,15 @@ function useRovingFocus(wrapRef, groups, items, isSelectable, onSelect, onOpen) 
     const pos = where.get(key);
     if (pos) lastIndex.current = pos.index;
   };
+  // Only a move to somewhere else counts as leaving: removing the focused button (a job moved its
+  // photo) fires focusout with no relatedTarget, and the focus must then follow to the next one.
   const onFocusOut = (e) => {
-    if (!wrapRef.current?.contains(e.relatedTarget)) focusInside.current = false;
+    if (e.relatedTarget && !wrapRef.current?.contains(e.relatedTarget)) focusInside.current = false;
   };
 
   const onKeyDown = (e) => {
-    const target = e.target.closest('[data-nav]');
     const navEl = navOf(e.target);
+    const onNavButton = navEl === e.target; // not the magnifier
     if (!navEl) return;
     const pos = where.get(navEl.dataset.nav);
     if (!pos) return;
@@ -280,15 +286,12 @@ function useRovingFocus(wrapRef, groups, items, isSelectable, onSelect, onOpen) 
     }
     // Space and Enter on a photo are handled here, not by the button's own click, so Shift is
     // read from the key itself (a Space-made click doesn't carry it in every browser).
-    if (!target || pos.at === 'head') return;
+    if (!onNavButton || pos.at === 'head' || (e.key !== 'Enter' && e.key !== ' ')) return;
+    e.preventDefault();
+    if (e.repeat) return; // a held key acts once, like a button's click
     const { item, index } = groups[pos.day].entries[pos.at];
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      onOpen(item.id);
-    } else if (e.key === ' ') {
-      e.preventDefault();
-      if (isSelectable(item)) onSelect(index, e.shiftKey);
-    }
+    if (e.key === 'Enter') onOpen(item.id);
+    else if (isSelectable(item)) onSelect(index, e.shiftKey);
   };
   // The button would still click on Space's release.
   const onKeyUp = (e) => {

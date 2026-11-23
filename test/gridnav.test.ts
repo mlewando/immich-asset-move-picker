@@ -68,6 +68,11 @@ test('1 column: ↑ ↓ step 1 photo', () => {
   assert.deepEqual(move(0, 4, 'ArrowDown', 1), { day: 1, at: 0 });
 });
 
+test('Home / End go to the 1st / last photo, also from a day button', () => {
+  assert.deepEqual(move(2, 3, 'Home'), { day: 0, at: 0 });
+  assert.deepEqual(move(0, 'head', 'End'), { day: 2, at: 6 });
+});
+
 // tabStop: photos a, b (day 1, with a day button), c (day 2).
 const photos = [
   { id: 'a', day: '2026-07-02' },
@@ -95,9 +100,4 @@ test('tabStop: a photo gone -> the one now at its flat position, else the last o
 test('tabStop: a day button gone -> that day 1st photo; the whole day gone -> by position', () => {
   assert.equal(stopOf(photos, dayKey('2026-07-02'), 0, []), 'a');
   assert.equal(stopOf(photos.slice(2), dayKey('2026-07-02'), 0, []), 'c');
-});
-
-test('Home / End go to the 1st / last photo, also from a day button', () => {
-  assert.deepEqual(move(2, 3, 'Home'), { day: 0, at: 0 });
-  assert.deepEqual(move(0, 'head', 'End'), { day: 2, at: 6 });
 });
