@@ -316,11 +316,10 @@ function ReadOnlyBanner({ problems, checking, onCheckAgain }) {
   return html`<div class="border-b border-amber-500/20 bg-amber-500/10 px-4 py-2 text-sm text-amber-200" role="alert">
     <div class="flex items-center gap-2">
       <${Icon} name="alert" class="size-4 shrink-0" />
-      <span class="min-w-0 flex-1 truncate"><strong class="font-semibold">Read-only.</strong><span class="hidden sm:inline"> Moving is switched off for now.</span></span>
+      <span class="min-w-0 flex-1 truncate"><strong class="font-semibold">Read-only.</strong><span class="sr-only sm:not-sr-only"> Moving is switched off for now.</span></span>
       <button
         class="shrink-0 rounded-full px-3 py-1 text-xs font-medium text-amber-100 outline-none hover:bg-amber-500/20 focus-visible:ring-2 focus-visible:ring-sky-400"
         aria-expanded=${open}
-        aria-controls="read-only-details"
         onClick=${() => setOpen(!open)}
       >${open ? 'Hide details' : 'Details'}</button>
       <${CheckAgain} checking=${checking} onClick=${onCheckAgain} />
@@ -385,12 +384,16 @@ function useGrid(route) {
  */
 function useToast() {
   const [toast, setToast] = useState(null);
+  const [held, setHeld] = useState(false); // the pointer or the focus is on it: it stays
   useEffect(() => {
-    if (!toast) return;
+    if (!toast || held) return;
     const t = setTimeout(() => setToast(null), toast.action ? TOAST_ACTION_MS : TOAST_MS);
     return () => clearTimeout(t);
+  }, [toast, held]);
+  useEffect(() => {
+    if (!toast) setHeld(false);
   }, [toast]);
-  return [toast, setToast];
+  return [toast, setToast, setHeld];
 }
 
 const LAST_MEMBER_KEY = 'picker.lastMember';
@@ -415,7 +418,7 @@ function App() {
   const [members, setMembers] = useState([]);
   const [tileSize, setTileSize] = useTileSize();
   const { gridKey, items, error, setError, selected, setSelected, anchor, reload, drop } = useGrid(route);
-  const [toast, setToast] = useToast();
+  const [toast, setToast, holdToast] = useToast();
 
   const loadStatus = useCallback(() => api.status({ poll: true }).then(setStatus, () => {}), []);
   useEffect(() => {
@@ -496,6 +499,8 @@ function App() {
   const readOnly = status?.readOnly ?? true;
   const tooMany = selected.size > MAX_PER_REQUEST;
   const [asking, setAsking] = useState(null); // the Give back question while open: { ids, byKeyboard }
+  // Another page or a read-only picker under an open question: it no longer applies.
+  useEffect(() => setAsking(null), [gridKey, readOnly]);
   const queue = useCallback(async (ids, byKeyboard) => {
     try {
       const r = route.kind === 'family' ? await api.giveBack(ids) : await api.move(route.id, ids);
@@ -697,6 +702,10 @@ function App() {
         toast.kind === 'error' ? 'bg-rose-600 text-white' : toast.kind === 'warn' ? 'bg-amber-500 text-neutral-950' : 'bg-neutral-100 text-neutral-900'
       }`}
       role="status"
+      onMouseEnter=${() => holdToast(true)}
+      onMouseLeave=${() => holdToast(false)}
+      onFocusIn=${() => holdToast(true)}
+      onFocusOut=${() => holdToast(false)}
     ><span>${toast.text}</span>${toast.action &&
       html`<button
         class="ml-3 rounded-full bg-black/15 px-3 py-0.5 text-xs font-semibold outline-none hover:bg-black/25 focus-visible:ring-2 focus-visible:ring-sky-500"

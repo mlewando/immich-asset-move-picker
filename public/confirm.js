@@ -8,7 +8,11 @@ const html = htm.bind(h);
 
 const btn = 'rounded-full px-4 py-1.5 text-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-sky-400';
 
-/** Mount it to open it. onConfirm / onCancel: the page unmounts it after either (and after Esc). */
+/**
+ * Mount it to open it. onConfirm / onCancel: the page unmounts it after either (and after Esc).
+ * The padding sits on an inner box, so a click on the dialog element itself is a click on the
+ * backdrop (which cancels).
+ */
 export function ConfirmDialog({ title, text, confirmLabel, onConfirm, onCancel }) {
   const box = useRef(null);
   const opener = useRef(document.activeElement);
@@ -21,7 +25,7 @@ export function ConfirmDialog({ title, text, confirmLabel, onConfirm, onCancel }
   }, []);
   return html`<dialog
     ref=${box}
-    class="m-auto w-[26rem] max-w-[90vw] rounded-2xl border border-white/10 bg-neutral-900 p-5 text-neutral-100 shadow-2xl backdrop:bg-black/60"
+    class="m-auto w-[26rem] max-w-[90vw] rounded-2xl border border-white/10 bg-neutral-900 p-0 text-neutral-100 shadow-2xl backdrop:bg-black/60"
     aria-labelledby="confirm-title"
     aria-describedby="confirm-text"
     onCancel=${(e) => {
@@ -30,11 +34,13 @@ export function ConfirmDialog({ title, text, confirmLabel, onConfirm, onCancel }
     }}
     onClick=${(e) => e.target === e.currentTarget && onCancel()}
   >
-    <h2 id="confirm-title" class="text-base font-semibold">${title}</h2>
-    <p id="confirm-text" class="mt-2 text-sm text-neutral-300">${text}</p>
-    <div class="mt-5 flex justify-end gap-2">
-      <button class=${`${btn} text-neutral-200 hover:bg-white/10`} onClick=${onCancel} autofocus>Cancel</button>
-      <button class=${`${btn} bg-rose-500 text-white hover:bg-rose-400`} onClick=${onConfirm}>${confirmLabel}</button>
+    <div class="p-5">
+      <h2 id="confirm-title" class="text-base font-semibold">${title}</h2>
+      <p id="confirm-text" class="mt-2 text-sm text-neutral-300">${text}</p>
+      <div class="mt-5 flex justify-end gap-2">
+        <button class=${`${btn} text-neutral-200 hover:bg-white/10`} onClick=${onCancel} autofocus>Cancel</button>
+        <button class=${`${btn} bg-rose-500 text-white hover:bg-rose-400`} onClick=${onConfirm}>${confirmLabel}</button>
+      </div>
     </div>
   </dialog>`;
 }
