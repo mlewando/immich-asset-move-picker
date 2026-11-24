@@ -18,7 +18,7 @@ const PICKER_DB = { user: 'immich_picker', password: 'picker-dev' };
 
 // Exactly the permissions the picker needs (see README), so the tests catch a missing one.
 const FAMILY_KEY_NAME = 'family-picker';
-const FAMILY_KEY_PERMISSIONS = ['asset.upload', 'asset.update', 'asset.delete', 'stack.create', 'user.read'];
+const FAMILY_KEY_PERMISSIONS = ['asset.upload', 'asset.update', 'asset.delete', 'stack.create', 'user.read', 'album.create', 'albumAsset.create'];
 
 type Photo = { file: string; at: string };
 const USERS = {

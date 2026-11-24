@@ -5,8 +5,10 @@
 import type { FastifyInstance, InjectOptions } from 'fastify';
 import type { ImmichApi, ServerVersion } from '../src/immich/api.ts';
 import type { Db } from '../src/immich/db.ts';
-import { EXPECTED_COLUMNS, EXPECTED_ENUMS, EXPECTED_WRITES } from '../src/immich/guard.ts';
-import type { Album, GridItem, MediaKind, Member } from '../src/immich/index.ts';
+import {
+  EXPECTED_COLUMNS, EXPECTED_ENUMS, EXPECTED_TABLE_WRITES, EXPECTED_WRITES, REQUIRED_KEY_PERMISSIONS,
+} from '../src/immich/guard.ts';
+import type { Album, FamilyAlbum, GridItem, MediaKind, Member, SourceAlbum } from '../src/immich/index.ts';
 import { openQueue } from '../src/queue.ts';
 import type { ServerDeps, ServerImmich } from '../src/server.ts';
 
@@ -20,6 +22,8 @@ export function fakeImmich(data: {
   names?: Record<string, string>;
   ping?: { db: string; api: string };
   down?: Error; // every read throws it
+  familyAlbums?: FamilyAlbum[];
+  sourceAlbums?: Record<string, SourceAlbum>; // by album id
 } = {}): ServerImmich & { calls: string[] } {
   const calls: string[] = [];
   const up = () => {
@@ -54,6 +58,24 @@ export function fakeImmich(data: {
     async ping() {
       return data.ping ?? { db: 'ok', api: 'ok' };
     },
+    async familyAlbums() {
+      up();
+      return data.familyAlbums ?? [];
+    },
+    async familyAlbumNamed(name) {
+      up();
+      const albums = (data.familyAlbums ??= []);
+      const found = albums.find((a) => a.name.trim().toLowerCase() === name.trim().toLowerCase());
+      if (found) return { id: found.id, name: found.name, created: false };
+      calls.push(`createAlbum ${name.trim()}`);
+      const id = `00000000-0000-4000-8000-${String(albums.length + 1).padStart(12, '0')}`;
+      albums.unshift({ id, name: name.trim(), count: 0, from: null, to: null, coverId: null, updatedAt: new Date().toISOString() });
+      return { id, name: name.trim(), created: true };
+    },
+    async sourceAlbum(id) {
+      up();
+      return data.sourceAlbums?.[id] ?? null;
+    },
   };
 }
 
@@ -62,12 +84,14 @@ export type FakeSchema = {
   columns: Record<string, string[]>;
   enums: Record<string, string[]>;
   updatable: Set<string>; // "table.column" the role may UPDATE
+  tableGrants: Set<string>; // "PRIVILEGE table" the role has on a whole table
 };
 
 export const healthySchema = (): FakeSchema => ({
   columns: structuredClone(EXPECTED_COLUMNS),
   enums: structuredClone(EXPECTED_ENUMS),
   updatable: new Set(EXPECTED_WRITES.map(([t, c]) => `${t}.${c}`)),
+  tableGrants: new Set(EXPECTED_TABLE_WRITES.map(([t, p]) => `${p} ${t}`)),
 });
 
 export function fakeDb(schema: FakeSchema = healthySchema(), opts: { down?: boolean } = {}): Db {
@@ -86,20 +110,34 @@ export function fakeDb(schema: FakeSchema = healthySchema(), opts: { down?: bool
         const [tables, cols] = params as [string[], string[]];
         return tables.map((t, i) => ({ t, c: cols[i], ok: schema.updatable.has(`${t}.${cols[i]}`) })) as unknown as R[];
       }
+      if (sql.includes('has_table_privilege')) {
+        const [tables, privs] = params as [string[], string[]];
+        return tables.map((t, i) => ({ t, p: privs[i], ok: schema.tableGrants.has(`${privs[i]} ${t}`) })) as unknown as R[];
+      }
       throw new Error(`fakeDb: unexpected query ${sql}`);
     },
     async close() {},
   };
 }
 
-export function fakeApi(version: ServerVersion | Error = { major: 3, minor: 4, patch: 1 }): Pick<ImmichApi, 'getServerVersion'> {
+export function fakeApi(
+  version: ServerVersion | Error = { major: 3, minor: 4, patch: 1 },
+  permissions: string[] | Error = [...REQUIRED_KEY_PERMISSIONS],
+): Pick<ImmichApi, 'getServerVersion' | 'getMyPermissions'> {
   return {
     async getServerVersion() {
       if (version instanceof Error) throw version;
       return version;
     },
+    async getMyPermissions() {
+      if (permissions instanceof Error) throw permissions;
+      return permissions;
+    },
   };
 }
+
+/** The family key's permissions, for an api built by hand in a test. */
+export const keyOk = { getMyPermissions: async () => [...REQUIRED_KEY_PERMISSIONS] };
 
 export function fakeWorker() {
   let kicks = 0;

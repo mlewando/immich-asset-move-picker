@@ -37,6 +37,12 @@ export type ImmichApi = {
   createStack(assetIds: string[]): Promise<void>;
   // DELETE /api/assets with force: gone at once, not in the trash (Give back).
   deleteAssets(assetIds: string[]): Promise<void>;
+  // POST /api/albums: a new, empty album of the family account; returns its id.
+  createAlbum(name: string): Promise<string>;
+  // PUT /api/albums/:id/assets: 1 result per asset; error e.g. 'duplicate' (already in it).
+  addToAlbum(albumId: string, assetIds: string[]): Promise<{ id: string; success: boolean; error?: string }[]>;
+  // GET /api/api-keys/me: the key's own permissions ('all' = every one). Needs no permission.
+  getMyPermissions(): Promise<string[]>;
 };
 
 /** A failed Immich API call; status 0 = no HTTP answer (network error or timeout). */
@@ -127,6 +133,24 @@ export function createImmichApi(
 
     async deleteAssets(assetIds) {
       await call('DELETE', '/assets', JSON.stringify({ ids: assetIds, force: true }), { json: true, timeoutMs: 30_000 });
+    },
+
+    async createAlbum(name) {
+      const r = (await call('POST', '/albums', JSON.stringify({ albumName: name }), { json: true, timeoutMs: 30_000 })) as { id?: unknown };
+      if (typeof r?.id !== 'string') throw new Error('Immich POST /albums → unexpected body');
+      return r.id;
+    },
+
+    async addToAlbum(albumId, assetIds) {
+      const r = await call('PUT', `/albums/${albumId}/assets`, JSON.stringify({ ids: assetIds }), { json: true, timeoutMs: 30_000 });
+      if (!Array.isArray(r)) throw new Error('Immich PUT /albums/:id/assets → unexpected body');
+      return r as { id: string; success: boolean; error?: string }[];
+    },
+
+    async getMyPermissions() {
+      const r = (await call('GET', '/api-keys/me')) as { permissions?: unknown };
+      if (!Array.isArray(r?.permissions)) throw new Error('Immich GET /api-keys/me → unexpected body');
+      return r.permissions.filter((p): p is string => typeof p === 'string');
     },
   };
 }

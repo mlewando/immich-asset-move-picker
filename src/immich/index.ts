@@ -7,6 +7,8 @@
 import { openAsBlob } from 'node:fs';
 import { access } from 'node:fs/promises';
 import type { Config } from '../config.ts';
+import * as albums from './albums.ts';
+import type { FamilyAlbum, SourceAlbum } from './albums.ts';
 import { createImmichApi } from './api.ts';
 import * as catalog from './catalog.ts';
 import type { Album, GridItem, MediaKind, Member, TimelineFilter } from './catalog.ts';
@@ -21,6 +23,7 @@ import { missingThumbnails } from './thumbnails.ts';
 import { setVisibility, type VisibilityResult } from './visibility.ts';
 
 export type { Album, GridItem, MediaKind, Member, TimelineFilter } from './catalog.ts';
+export type { FamilyAlbum, SourceAlbum } from './albums.ts';
 export type { CopyResult } from './copy.ts';
 export { isTransient, transient } from './errors.ts';
 export type { GiveBackPlan } from './giveback.ts';
@@ -79,6 +82,21 @@ export type Immich = {
   missingThumbnails(originalIds: string[]): Promise<Set<string>>;
   /** Give back, last step: force-deletes these family assets (gone ones are skipped). */
   deleteFromFamily(familyAssetIds: string[]): Promise<void>;
+
+  // --- Albums
+  /** The family account's albums to move into, the most recently updated first. */
+  familyAlbums(): Promise<FamilyAlbum[]>;
+  /**
+   * The family album named so (case-insensitive, trimmed), created when there is none. created:
+   * whether it is new.
+   */
+  familyAlbumNamed(name: string): Promise<{ id: string; name: string; created: boolean }>;
+  /** Family assets into a family album; safe to repeat. 'gone' = the album no longer exists. */
+  addToFamilyAlbum(albumId: string, familyAssetIds: string[]): Promise<'added' | 'gone'>;
+  /** A member's album as the delete rule sees it (see SourceAlbum); null when it is gone. */
+  sourceAlbum(albumId: string): Promise<SourceAlbum | null>;
+  /** Deletes the album when nothing in it is on a timeline (checked as it deletes); whether it did. */
+  deleteSourceAlbum(albumId: string): Promise<boolean>;
 
   // --- Health
   /**
@@ -160,6 +178,20 @@ export function createImmich(cfg: {
     linkToFamily: (ids) =>
       linkToFamily({ pairs: sqlLinkPairs(db, familyId), localPath: (p) => mapImmichPath(p, cfg.library) }, ids),
     missingThumbnails: async (ids) => missingThumbnails(db, await familyId(), ids),
+
+    familyAlbums: async () => albums.familyAlbums(db, await familyId()),
+    async familyAlbumNamed(name) {
+      const wanted = name.trim();
+      if (!wanted) throw new Error('album name is empty');
+      const existing = (await albums.familyAlbums(db, await familyId())).find(
+        (a) => a.name.trim().toLowerCase() === wanted.toLowerCase(),
+      );
+      if (existing) return { id: existing.id, name: existing.name, created: false };
+      return { id: await api.createAlbum(wanted), name: wanted, created: true };
+    },
+    addToFamilyAlbum: async (albumId, ids) => albums.addToAlbum({ db, api, familyId: await familyId() }, albumId, ids),
+    sourceAlbum: (albumId) => albums.sourceAlbum(db, albumId),
+    deleteSourceAlbum: (albumId) => albums.deleteSourceAlbum(db, albumId),
 
     check: (opts) => checkGuard({ api, db: guardDb, quick: opts?.quick }),
     async ping() {

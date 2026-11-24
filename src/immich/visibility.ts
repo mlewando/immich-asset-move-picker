@@ -1,6 +1,7 @@
-// The picker's only write to Immich's database: archive ⇄ timeline of originals (Immich's API
-// lets only an asset's owner do it). The role may update nothing but asset.visibility (+ the
-// asset_face columns Immich's trigger copies it into: dev/picker-db.sql); the rest is enforced
+// The picker's write to Immich's assets: archive ⇄ timeline of originals (Immich's API lets only
+// an asset's owner do it); its only other write is deleting a moved-out album (albums.ts). The
+// role may update nothing but asset.visibility (+ the asset_face columns Immich's trigger copies
+// it into: dev/picker-db.sql); the rest is enforced
 // here: only these 2 targets, and only on live, uploaded assets that are archived or on the
 // timeline (never hidden live-photo halves, locked, trashed or external-library assets).
 import type { Db } from './db.ts';

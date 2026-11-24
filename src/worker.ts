@@ -18,7 +18,8 @@ export type JobDeps = {
   queue: Queue;
   immich: Pick<
     Immich,
-    'copyToFamily' | 'albumsOf' | 'archive' | 'linkToFamily' | 'missingThumbnails' | 'prepareGiveBack' | 'restore' | 'deleteFromFamily'
+    | 'copyToFamily' | 'albumsOf' | 'archive' | 'linkToFamily' | 'missingThumbnails' | 'prepareGiveBack' | 'restore'
+    | 'deleteFromFamily' | 'addToFamilyAlbum' | 'sourceAlbum' | 'deleteSourceAlbum'
   >;
 };
 
@@ -34,8 +35,12 @@ const originalsOf = (job: Job): string[] => job.originals ?? [job.sourceAssetId]
  * Move to family: runs the steps after the last recorded one. Each Immich call is safe to repeat,
  * so a crash or a failure resumes cleanly.
  *
- *   queued ──copyToFamily──▶ copied ──archive──▶ archived ──linkToFamily──▶ linked
- *          ──missingThumbnails──▶ thumbnailed (done)
+ *   queued ──copyToFamily──▶ copied [──addToFamilyAlbum──▶ albumed] ──archive──▶ archived
+ *          ──linkToFamily──▶ linked ──missingThumbnails──▶ thumbnailed (done)
+ *
+ * albumed only for a move into a family album: the picked asset's family copy goes in (a stack's
+ * primary, a live photo's still, as Immich's own "Add to album" does). An album deleted meanwhile
+ * doesn't stop the move: the history says it wasn't added.
  *
  * The original is archived only once its family copy fully exists, so a failure before that
  * leaves the member's timeline untouched. A live photo moves with its video, a stack whole
@@ -48,11 +53,12 @@ const originalsOf = (job: Job): string[] => job.originals ?? [job.sourceAssetId]
  * Throws on failure (Immich's refusal reason or the error); the caller records it.
  */
 export async function runMove(deps: JobDeps, job: Job): Promise<'done' | 'waiting'> {
-  let { step, originals } = job;
+  let { step, originals, familyAssetId } = job;
   if (step === 'queued') {
     const copy = await deps.immich.copyToFamily(job.sourceAssetId);
     step = 'copied';
     originals = copy.originals;
+    familyAssetId = copy.familyAssetId;
     // For the history: was the photo copied, or already there? Only the 1st try can tell: a
     // failure, a Retry or a restart each leave an entry, and a try after one finds what the
     // earlier try uploaded just like a photo that was there all along. (A job queued before the
@@ -75,9 +81,20 @@ export async function runMove(deps: JobDeps, job: Job): Promise<'done' | 'waitin
       step, familyAssetId: copy.familyAssetId, originals, note: notes.length ? notes.join(' • ') : undefined, outcome,
     });
   }
+  if (step === 'copied' && job.albumId) {
+    if (!familyAssetId) throw new Error('no family copy recorded to put into the album');
+    const name = job.albumName ?? 'the album';
+    const added = await deps.immich.addToFamilyAlbum(job.albumId, [familyAssetId]);
+    step = 'albumed';
+    deps.queue.advance(job.id, {
+      step,
+      note: `Album «${name}»`,
+      outcome: added === 'gone' ? 'gone' : undefined,
+    });
+  }
   // `originals` is recorded together with 'copied', so it is set from here on. The fallback (just
   // the asset itself) only covers a row advanced without it, as the resume tests do.
-  if (step === 'copied') {
+  if (step === 'copied' || step === 'albumed') {
     // 'unchanged' is fine: archived by an earlier run whose step wasn't recorded.
     const results = await deps.immich.archive(originals ?? [job.sourceAssetId]);
     const refused = results.flatMap((r) => (r.result === 'refused' ? [r.reason] : []));
@@ -169,6 +186,46 @@ export async function runGiveBack(deps: JobDeps, job: Job): Promise<'done'> {
     deps.queue.advance(job.id, { step, done: true });
   }
   return 'done';
+}
+
+/**
+ * The open "delete this album once its photos are moved" requests, decided while no job is
+ * pending or running (the caller checks):
+ *   - nothing in the album on a timeline → deleted (sharing, shared links and comments go with it);
+ *   - else, while a photo left in it has a failed move → stays open, decided again after Retry;
+ *   - else → kept (the photos left there were not moved, on purpose), never looked at again;
+ *   - the album no longer exists → closed.
+ * Each outcome goes into the history of the request's newest job. Returns how many it closed.
+ */
+export async function runAlbumCleanups(deps: JobDeps): Promise<number> {
+  let closed = 0;
+  for (const req of deps.queue.openCleanups()) {
+    const album = await deps.immich.sourceAlbum(req.albumId);
+    if (!album) {
+      deps.queue.closeCleanup(req.id, 'gone', `Album «${req.albumName}» no longer exists`);
+      closed++;
+      continue;
+    }
+    const owner = album.ownerName ? `${album.ownerName}'s album` : 'Album';
+    if (!album.blocking.length) {
+      // Checked again as it deletes: a photo put back meanwhile keeps it (decided next time).
+      if (!(await deps.immich.deleteSourceAlbum(req.albumId))) continue;
+      const went = [
+        album.sharedWith.length ? `sharing with ${album.sharedWith.join(', ')}` : '',
+        album.links ? `${album.links} shared link${album.links > 1 ? 's' : ''}` : '',
+        album.comments ? `comments and likes (${album.comments})` : '',
+      ].filter(Boolean);
+      deps.queue.closeCleanup(req.id, 'deleted', `${owner} «${album.name}» deleted${went.length ? `, with its ${went.join(', ')}` : ''}`);
+      closed++;
+      continue;
+    }
+    const failed = deps.queue.unfinishedAssetIds('move');
+    if (album.blocking.some((a) => failed.has(a.id) || (a.primaryId !== null && failed.has(a.primaryId)))) continue;
+    const n = album.blocking.length;
+    deps.queue.closeCleanup(req.id, 'kept', `${owner} «${album.name}» kept: ${n} photo${n > 1 ? 's' : ''} still on the timeline`);
+    closed++;
+  }
+  return closed;
 }
 
 /** Counter: files not hard-linked because they differ (the link_mismatch_total metric). */
@@ -266,7 +323,11 @@ export function createWorker(
         if (checked.done.length || checked.failed.length) deps.onChange?.();
       }
       const job = deps.queue.claimNext();
-      if (!job) return;
+      if (!job) {
+        const c = deps.queue.counts();
+        if (c.pending + c.running === 0 && (await runAlbumCleanups(deps))) deps.onChange?.();
+        return;
+      }
       try {
         const outcome = await (job.kind === 'giveback' ? runGiveBack : runMove)(deps, job);
         if (outcome === 'waiting') deps.queue.wait(job.id);

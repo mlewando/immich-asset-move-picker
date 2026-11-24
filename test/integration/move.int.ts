@@ -166,7 +166,7 @@ test('move 3 photos: queued, done, originals archived, copies in the family time
   const ids = Object.values(moved).map((i) => i.id);
   const res = await post('/api/moves', { memberId: bob.id, assetIds: ids });
   assert.equal(res.status, 202);
-  assert.deepEqual(res.body, { queued: 3, alreadyQueued: 0, queuedIds: ids });
+  assert.deepEqual(res.body, { queued: 3, alreadyQueued: 0, queuedIds: ids, album: null });
 
   await settled();
   const summary = (await json<{ done: number; failed: { sourceAssetId: string }[] }>('/api/jobs')).body;
@@ -221,7 +221,7 @@ test("what can't move is queued, then fails with Immich's reason; nothing writte
   // give back below (a failed job's asset stays hidden until retried).
   const archived = moved['photo-9.jpg']!;
   const res = await post('/api/moves', { memberId: anna.id, assetIds: [nonPrimary, archived.id] });
-  assert.deepEqual(res.body, { queued: 2, alreadyQueued: 0, queuedIds: [nonPrimary, archived.id] });
+  assert.deepEqual(res.body, { queued: 2, alreadyQueued: 0, queuedIds: [nonPrimary, archived.id], album: null });
   await settled();
   const { failed } = (await json<{ failed: { sourceAssetId: string; fileName: string; step: string; error: string }[] }>('/api/jobs')).body;
   const byId = new Map(failed.map((f) => [f.sourceAssetId, f]));

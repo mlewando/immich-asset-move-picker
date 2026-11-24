@@ -13,10 +13,12 @@ import type { GridItem, GuardResult, Immich, MediaKind } from './immich/index.ts
 import type { Kind, ListedJob, Queue, Section } from './queue.ts';
 import type { Worker } from './worker.ts';
 
-// The HTTP layer only reads from Immich; writes happen in the worker.
+// The HTTP layer reads from Immich; writes happen in the worker, except creating the family album
+// a move goes into (before its jobs are queued, so they all get the same one).
 export type ServerImmich = Pick<
   Immich,
-  'members' | 'memberTimeline' | 'memberAlbums' | 'familyTimeline' | 'mediaFile' | 'fileNames' | 'ping'
+  | 'members' | 'memberTimeline' | 'memberAlbums' | 'familyTimeline' | 'mediaFile' | 'fileNames' | 'ping'
+  | 'familyAlbums' | 'familyAlbumNamed' | 'sourceAlbum'
 >;
 
 export type ServerDeps = {
@@ -96,6 +98,8 @@ const listedJobSchema = {
     thumbAssetId: { type: 'string' },
     fileName: nullable('string'),
     memberId: nullable('string'),
+    albumId: nullable('string'),
+    albumName: nullable('string'),
     requestedBy: nullable('string'),
     createdAt: { type: 'string' },
     updatedAt: { type: 'string' },
@@ -301,6 +305,7 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
                 count: { type: 'integer' },
                 from: { type: 'string' },
                 to: { type: 'string' },
+                ownerName: nullable('string'),
               },
             },
           },
@@ -312,6 +317,33 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
       if (!(await isMember(req.params.id))) return reply.code(404).send({ error: 'no such member' });
       return deps.immich.memberAlbums(req.params.id);
     },
+  );
+
+  app.get(
+    '/api/family/albums',
+    {
+      schema: {
+        response: {
+          200: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['id', 'name', 'count', 'from', 'to', 'coverId', 'updatedAt'],
+              properties: {
+                id: { type: 'string' },
+                name: { type: 'string' },
+                count: { type: 'integer' },
+                from: nullable('string'),
+                to: nullable('string'),
+                coverId: nullable('string'),
+                updatedAt: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    },
+    async () => deps.immich.familyAlbums(),
   );
 
   app.get(
@@ -421,16 +453,31 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
   // Queues the jobs and wakes the worker. No check here whether each asset can go: it could be
   // stale by the time the worker runs. The worker's Immich calls refuse what can't, and that job
   // is listed as failed with the reason. queuedIds: the page counts the files of just those.
-  const queueJobs = (req: FastifyRequest, kind: Kind, ids: string[], memberId: string | null = null) => {
+  const queueJobs = (
+    req: FastifyRequest,
+    kind: Kind,
+    ids: string[],
+    memberId: string | null = null,
+    extra: Pick<NonNullable<Parameters<Queue['enqueue']>[2]>, 'album' | 'cleanup'> = {},
+  ) => {
     const requestedBy = req.user?.email ?? null; // null when the login is off (local dev)
-    const queued = deps.queue.enqueue(kind, ids, { memberId, requestedBy });
+    const queued = deps.queue.enqueue(kind, ids, { memberId, requestedBy, ...extra });
     const alreadyQueued = ids.length - queued.length;
-    req.log.info({ by: requestedBy, kind, memberId, queued: queued.length, alreadyQueued }, `${kind} requested`);
-    if (queued.length) deps.worker.kick();
+    req.log.info(
+      { by: requestedBy, kind, memberId, queued: queued.length, alreadyQueued, album: extra.album?.id, cleanup: extra.cleanup?.albumId },
+      `${kind} requested`,
+    );
+    // An open album request is decided by the worker, so it runs even when nothing new was queued.
+    if (queued.length || extra.cleanup) deps.worker.kick();
     return { queued: queued.length, alreadyQueued, queuedIds: queued };
   };
 
-  app.post<{ Body: { memberId: string; assetIds: string[] } }>(
+  // album: an existing family album (id) or one by name (created unless a family album has that
+  // name already); none = the rare move into no album. deleteAlbumId: the member's album to
+  // delete once all its photos are moved.
+  app.post<{
+    Body: { memberId: string; assetIds: string[]; album?: { id?: string; name?: string }; deleteAlbumId?: string };
+  }>(
     '/api/moves',
     {
       preHandler: writable,
@@ -439,14 +486,41 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
           type: 'object',
           required: ['memberId', 'assetIds'],
           additionalProperties: false,
-          properties: { memberId: uuidParam, assetIds },
+          properties: {
+            memberId: uuidParam,
+            assetIds,
+            album: {
+              type: 'object',
+              additionalProperties: false,
+              minProperties: 1,
+              maxProperties: 1,
+              properties: { id: uuidParam, name: { type: 'string', minLength: 1, maxLength: 200, pattern: '\\S' } },
+            },
+            deleteAlbumId: uuidParam,
+          },
         },
       },
     },
     async (req, reply) => {
-      const { memberId, assetIds } = req.body;
+      const { memberId, assetIds, album, deleteAlbumId } = req.body;
       if (!(await isMember(memberId))) return reply.code(404).send({ error: 'no such member' });
-      return reply.code(202).send(queueJobs(req, 'move', assetIds, memberId));
+      let cleanup: { albumId: string; albumName: string } | undefined;
+      if (deleteAlbumId) {
+        const source = await deps.immich.sourceAlbum(deleteAlbumId);
+        if (!source) return reply.code(404).send({ error: 'no such album to delete' });
+        cleanup = { albumId: source.id, albumName: source.name };
+      }
+      let into: { id: string; name: string; created: boolean } | undefined;
+      if (album?.id) {
+        const found = (await deps.immich.familyAlbums()).find((a) => a.id === album.id);
+        if (!found) return reply.code(404).send({ error: 'no such family album' });
+        into = { id: found.id, name: found.name, created: false };
+      } else if (album?.name) {
+        into = await deps.immich.familyAlbumNamed(album.name);
+        if (into.created) req.log.info({ by: req.user?.email ?? null, album: into.id }, 'family album created');
+      }
+      const queued = queueJobs(req, 'move', assetIds, memberId, { album: into && { id: into.id, name: into.name }, cleanup });
+      return reply.code(202).send({ ...queued, album: into ?? null });
     },
   );
 

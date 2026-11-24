@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import type { InjectOptions } from 'fastify';
-import type { GridItem, GuardResult } from '../src/immich/index.ts';
+import type { FamilyAlbum, GridItem, GuardResult } from '../src/immich/index.ts';
 import { openQueue } from '../src/queue.ts';
 import { buildApp, type ServerDeps } from '../src/server.ts';
 import { FAMILY_ID, fakeImmich, fakeWorker, serverDeps, withCsrf } from './fakes.ts';
@@ -157,16 +157,16 @@ test('moves: queues every id (the worker decides what can move), kicks the worke
   const other = '00000000-0000-4000-8000-00000000a552';
   const res = await call({ guard: guardOk, immich: members(), queue, worker }, post('/api/moves', { memberId: ANNA, assetIds: [ASSET, other] }));
   assert.equal(res.statusCode, 202);
-  assert.deepEqual(res.json(), { queued: 2, alreadyQueued: 0, queuedIds: [ASSET, other] });
+  assert.deepEqual(res.json(), { queued: 2, alreadyQueued: 0, queuedIds: [ASSET, other], album: null });
   assert.equal(worker.kicks(), 1);
 
   // Same asset again while its move is unfinished → not queued twice; the answer names the new one.
   const third = '00000000-0000-4000-8000-00000000a553';
   const again = await call({ guard: guardOk, immich: members(), queue, worker }, post('/api/moves', { memberId: ANNA, assetIds: [ASSET, third] }));
-  assert.deepEqual(again.json(), { queued: 1, alreadyQueued: 1, queuedIds: [third] });
+  assert.deepEqual(again.json(), { queued: 1, alreadyQueued: 1, queuedIds: [third], album: null });
   assert.equal(worker.kicks(), 2);
   const none = await call({ guard: guardOk, immich: members(), queue, worker }, post('/api/moves', { memberId: ANNA, assetIds: [ASSET] }));
-  assert.deepEqual(none.json(), { queued: 0, alreadyQueued: 1, queuedIds: [] });
+  assert.deepEqual(none.json(), { queued: 0, alreadyQueued: 1, queuedIds: [], album: null });
   assert.equal(worker.kicks(), 2);
 });
 
@@ -178,6 +178,71 @@ test('moves: refused while read-only, for the family account, bad body', async (
   for (const bad of [{}, { memberId: ANNA, assetIds: [] }, { memberId: ANNA, assetIds: ['x'] }, { memberId: ANNA, assetIds: [ASSET, ASSET] }]) {
     assert.equal((await call({ guard: guardOk, immich: members() }, post('/api/moves', bad))).statusCode, 400, JSON.stringify(bad));
   }
+});
+
+const TRIP: FamilyAlbum = {
+  id: '00000000-0000-4000-8000-0000000fa001', name: 'Trip', count: 3, from: '2026-07-01', to: '2026-07-03',
+  coverId: ASSET, updatedAt: '2026-07-04T10:00:00.000Z',
+};
+const GARDEN_ID = '00000000-0000-4000-8000-0000000c0002';
+const withAlbums = () =>
+  fakeImmich({
+    members: [{ id: ANNA, name: 'Anna', email: 'a@x', hasPhotos: true }],
+    familyAlbums: [TRIP],
+    sourceAlbums: {
+      [GARDEN_ID]: { id: GARDEN_ID, name: 'Garden', ownerName: 'Anna', blocking: [], sharedWith: [], links: 0, comments: 0 },
+    },
+  });
+
+test('family albums: listed as Immich has them', async () => {
+  const res = await call({ immich: withAlbums() }, '/api/family/albums');
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json(), [TRIP]);
+});
+
+test('moves into an existing family album: each job carries it', async () => {
+  const queue = openQueue(':memory:');
+  const res = await call({ guard: guardOk, immich: withAlbums(), queue }, post('/api/moves', { memberId: ANNA, assetIds: [ASSET], album: { id: TRIP.id } }));
+  assert.equal(res.statusCode, 202);
+  assert.deepEqual(res.json().album, { id: TRIP.id, name: 'Trip', created: false });
+  const job = queue.claimNext()!;
+  assert.deepEqual([job.albumId, job.albumName], [TRIP.id, 'Trip']);
+});
+
+test('moves into an album by name: an existing name (any case) is reused, a new one created once', async () => {
+  const immich = withAlbums();
+  const queue = openQueue(':memory:');
+  const same = await call({ guard: guardOk, immich, queue }, post('/api/moves', { memberId: ANNA, assetIds: [ASSET], album: { name: '  trip ' } }));
+  assert.deepEqual(same.json().album, { id: TRIP.id, name: 'Trip', created: false });
+  const other = '00000000-0000-4000-8000-00000000a552';
+  const created = await call({ guard: guardOk, immich, queue }, post('/api/moves', { memberId: ANNA, assetIds: [other], album: { name: 'Zoo' } }));
+  assert.equal(created.json().album.created, true);
+  assert.deepEqual(immich.calls.filter((c) => c.startsWith('createAlbum')), ['createAlbum Zoo']);
+  assert.equal(queue.list('active').jobs[1]!.albumName, 'Zoo');
+});
+
+test('moves with an album: unknown family album → 404, nothing queued; bad album body → 400', async () => {
+  const queue = openQueue(':memory:');
+  const unknown = { id: '00000000-0000-4000-8000-0000000fa999' };
+  const res = await call({ guard: guardOk, immich: withAlbums(), queue }, post('/api/moves', { memberId: ANNA, assetIds: [ASSET], album: unknown }));
+  assert.equal(res.statusCode, 404);
+  assert.equal(queue.counts().pending, 0);
+  for (const album of [{}, { name: '' }, { name: '   ' }, { id: 'x' }, { id: TRIP.id, name: 'Trip' }, { name: 'x'.repeat(201) }]) {
+    const bad = await call({ guard: guardOk, immich: withAlbums() }, post('/api/moves', { memberId: ANNA, assetIds: [ASSET], album }));
+    assert.equal(bad.statusCode, 400, JSON.stringify(album));
+  }
+});
+
+test('moves with deleteAlbumId: 1 open request for the album; unknown album → 404; kicks even when nothing new is queued', async () => {
+  const queue = openQueue(':memory:');
+  const worker = fakeWorker();
+  const body = { memberId: ANNA, assetIds: [ASSET], album: { id: TRIP.id }, deleteAlbumId: GARDEN_ID };
+  assert.equal((await call({ guard: guardOk, immich: withAlbums(), queue, worker }, post('/api/moves', body))).statusCode, 202);
+  assert.equal((await call({ guard: guardOk, immich: withAlbums(), queue, worker }, post('/api/moves', body))).json().queued, 0);
+  assert.deepEqual(queue.openCleanups(), [{ id: 1, albumId: GARDEN_ID, albumName: 'Garden' }]);
+  assert.equal(worker.kicks(), 2);
+  const unknown = { ...body, deleteAlbumId: '00000000-0000-4000-8000-0000000c0999' };
+  assert.equal((await call({ guard: guardOk, immich: withAlbums(), queue, worker }, post('/api/moves', unknown))).statusCode, 404);
 });
 
 test('give backs: queued as kind giveback, kick, not twice; refused while read-only; bad body', async () => {
@@ -278,7 +343,7 @@ test('member timeline filter: album + day range passed on; malformed values → 
 });
 
 test('member albums: only for a listed member', async () => {
-  const albums = [{ id: '00000000-0000-4000-8000-0000000a1b01', name: 'Holiday', count: 3, from: '2026-07-01', to: '2026-07-14' }];
+  const albums = [{ id: '00000000-0000-4000-8000-0000000a1b01', name: 'Holiday', count: 3, from: '2026-07-01', to: '2026-07-14', ownerName: 'Anna' }];
   const immich = fakeImmich({ members: [{ id: ANNA, name: 'Anna', email: 'a@x', hasPhotos: true }], albums: { [ANNA]: albums } });
   assert.deepEqual((await call({ immich }, `/api/members/${ANNA}/albums`)).json(), albums);
   assert.equal((await call({ immich }, `/api/members/${FAMILY_ID}/albums`)).statusCode, 404);

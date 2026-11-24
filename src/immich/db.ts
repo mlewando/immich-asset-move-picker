@@ -1,8 +1,9 @@
 import pg from 'pg';
 import type { Config } from '../config.ts';
 
-// Immich's Postgres, as the picker's own role (read grants + archive ⇄ timeline, see
-// dev/picker-db.sql). Only src/immich/ uses it; the narrow surface lets unit tests pass a fake.
+// Immich's Postgres, as the picker's own role (read grants, archive ⇄ timeline and deleting a
+// moved-out album, see dev/picker-db.sql). Only src/immich/ uses it; the narrow surface lets unit
+// tests pass a fake.
 export type Db = {
   query<R extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<R[]>;
   close(): Promise<void>;

@@ -13,6 +13,21 @@ has made the family copy's thumbnail and preview; until then the picker shows it
 thumbnails. A big batch may wait hours for Immich's queue; a move fails only when Immich made no
 move's thumbnails for 30 min (Retry checks again, nothing is moved twice).
 
+**Move to family** asks which family album the photos go into: pick one of the family account's
+albums (each with its cover, dates and photo count) or type a name to create a new one before
+moving; a name the family already has (in any letter case) is that album. **Move without album**
+skips it. A stack goes in by its primary photo and a live photo by its still, as Immich's own "Add
+to album" does. An album deleted in Immich before a move gets to it doesn't stop the move; its
+history says the photo wasn't added. The album last moved into is offered first next time.
+
+When the grid is filtered by an album of the member's, the dialog also offers (checked by
+default) to delete that album once all its photos are moved. Once no job is pending or running,
+the album is deleted if everything in it is archived, hidden (a live photo's video) or in the
+trash, whoever owns it and its photos; its sharing, shared links, comments and likes go with it,
+and **Give back** doesn't bring it back. An album with a photo left on a timeline is kept, and
+looked at again only while one of those photos has a failed move (after Retry). The history of
+the move's last job says which it was.
+
 Nothing is ever deleted that has no other copy, and every step can be resumed after a failure.
 A failure that usually passes on its own (Immich not answering or restarting, a file moved by
 Storage Template Migration meanwhile) is tried again after 1, 5 and 15 min (at once when Immich
@@ -39,10 +54,15 @@ and of Done are 1 Tab stop each the same way; Enter or Space opens the job.
 - **Immich v3.4.1 or v3.4.2**, with the library reachable as
   files.
 - An **API key of the family account** with the permissions `asset.upload`, `asset.update`,
-  `asset.delete`, `stack.create` and `user.read`.
+  `asset.delete`, `stack.create`, `user.read`, `album.create` and `albumAsset.create` (or `all`).
 - A **Postgres role** in Immich's database with the grants in [`dev/picker-db.sql`](dev/picker-db.sql):
-  read access, plus updating `asset.visibility` (archive/unarchive). Nothing else is created
-  in Immich's database.
+  read access, plus updating `asset.visibility` (archive/unarchive) and deleting an album (a
+  member's, once all its photos are moved, with the audit rows Immich's triggers write for it).
+  Nothing else is created in Immich's database.
+
+  The upgrade guard checks the key's permissions and the role's grants: with any missing, the
+  picker stays read-only. Since 1.0.0 both need the album ones: give the key `album.create` and
+  `albumAsset.create`, and run `dev/picker-db.sql` again.
 - The Immich **library mounted read-write as 1 mount** (hard links don't work across mounts), and
   Immich's thumbnails directory (read-only is enough).
 - An **OpenID Connect provider** (e.g. Authelia): the picker is its client and logs users in

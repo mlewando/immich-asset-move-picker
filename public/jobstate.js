@@ -15,11 +15,13 @@ export function ago(iso, now = Date.now()) {
 
 export const kindLabel = (job) => (job.kind === 'giveback' ? 'Give back' : 'Move');
 
-// The steps a job goes through, in order, with their label once done.
-export const STEPS = {
+// The steps a job goes through, in order, with their label once done. A move has 'albumed' only
+// when it goes into a family album.
+const STEPS = {
   move: [
     ['queued', 'Queued'],
     ['copied', 'Copied'],
+    ['albumed', 'In album'],
     ['archived', 'Archived'],
     ['linked', 'Linked'],
     ['thumbnailed', 'Thumbnails'],
@@ -30,12 +32,17 @@ export const STEPS = {
     ['deleted', 'Deleted'],
   ],
 };
+export const stepsOf = (job) => (job.kind === 'move' && !job.albumId ? STEPS.move.filter(([s]) => s !== 'albumed') : STEPS[job.kind]);
 
 // What a job does after its last completed step.
 const NEXT = {
-  move: { queued: 'copying', copied: 'archiving the original', archived: 'hard-linking', linked: 'processing thumbnails' },
+  move: {
+    queued: 'copying', copied: 'archiving the original', albumed: 'archiving the original', archived: 'hard-linking',
+    linked: 'processing thumbnails',
+  },
   giveback: { queued: 'restoring the originals', restored: 'deleting the family copy' },
 };
+const next = (job) => (job.kind === 'move' && job.step === 'copied' && job.albumId ? 'adding to the album' : NEXT[job.kind][job.step]);
 
 // tone: ok | busy | warn | bad | idle (colours in TONE).
 export const TONE = {
@@ -51,9 +58,9 @@ export function stateOf(job) {
   if (job.status === 'failed') return { text: 'Failed', tone: 'bad' };
   if (job.status === 'done') return { text: job.failures ? `Done • ${job.failures}× failed` : 'Done', tone: job.failures ? 'warn' : 'ok' };
   if (job.retryAt) return { text: `Retrying at ${clock(job.retryAt)}`, tone: 'warn' };
-  if (job.status === 'running') return { text: NEXT[job.kind][job.step] ?? job.step, tone: 'busy' };
+  if (job.status === 'running') return { text: next(job) ?? job.step, tone: 'busy' };
   if (job.waitingSince) return { text: 'Processing thumbnails', tone: 'busy' };
-  return { text: job.step === 'queued' ? 'Queued' : `Queued • ${NEXT[job.kind][job.step] ?? job.step}`, tone: 'idle' };
+  return { text: job.step === 'queued' ? 'Queued' : `Queued • ${next(job) ?? job.step}`, tone: 'idle' };
 }
 
 /** A tile's name for screen readers and the hover title. */
@@ -62,6 +69,7 @@ export const tileLabel = (job) => `${kindLabel(job)} ${job.fileName ?? ''}: ${st
 // A completed step, in the history.
 const DONE_STEP = {
   copied: 'Copied to the family account',
+  albumed: 'Added to the family album',
   archived: 'Original archived',
   linked: 'Hard-linked to the family copy',
   thumbnailed: 'Family copy has its thumbnails',
@@ -69,10 +77,19 @@ const DONE_STEP = {
   deleted: 'Family copy deleted',
 };
 
-// The copy step when nothing was uploaded (the event's outcome).
-const NOT_COPIED = {
+// A step's line when its outcome says how it went: the copy step when nothing was uploaded, the
+// album step when the album was gone.
+const OUTCOME = {
   existing: 'Already in the family account, no copy made',
   unknown: 'In the family account: copied on an earlier try, or already there',
+  gone: 'Not added: the family album no longer exists',
+};
+
+// The member's album the curator asked to delete once its photos are moved: how it ended.
+const ALBUM = {
+  deleted: ['Member’s album deleted', 'step'],
+  kept: ['Member’s album kept', 'neutral'],
+  gone: ['Member’s album already gone', 'neutral'],
 };
 
 /** A history line: its text and kind (for its icon and colour). */
@@ -81,7 +98,11 @@ export function eventOf(e) {
     case 'queued':
       return { text: 'Queued', kind: 'neutral' };
     case 'step':
-      return { text: NOT_COPIED[e.outcome] ?? DONE_STEP[e.step] ?? e.step, kind: 'step' };
+      return { text: OUTCOME[e.outcome] ?? DONE_STEP[e.step] ?? e.step, kind: e.outcome === 'gone' ? 'warn' : 'step' };
+    case 'album': {
+      const [text, kind] = ALBUM[e.outcome] ?? ['Member’s album', 'neutral'];
+      return { text, kind };
+    }
     case 'done':
       return { text: DONE_STEP[e.step] ?? e.step, kind: 'done' };
     case 'waiting':

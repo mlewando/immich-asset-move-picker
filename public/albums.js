@@ -3,6 +3,7 @@
 import { h } from 'preact';
 import { useMemo, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
+import { fold } from './albumchoice.js';
 import { Icon } from './icons.js';
 import { Popover } from './popover.js';
 
@@ -26,9 +27,6 @@ export const chip = (on) =>
   `flex h-9 min-w-0 items-center gap-1.5 rounded-full border px-3 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sky-400 ${
     on ? 'border-sky-400/40 bg-sky-500/15 text-sky-100 hover:bg-sky-500/25' : 'border-white/10 text-neutral-200 hover:bg-white/5'
   }`;
-
-// Case- and accent-blind ("zolw" finds "Żółw").
-const fold = (s) => s.normalize('NFD').replace(/\p{M}/gu, '').replace(/ł/g, 'l').replace(/Ł/g, 'L').toLowerCase();
 
 export function AlbumPicker({ albums, value, onChange }) {
   const [open, setOpen] = useState(false);

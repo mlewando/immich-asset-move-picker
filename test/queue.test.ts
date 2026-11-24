@@ -41,7 +41,7 @@ test('advance records step and copy; fail/retry; failed list', () => {
   const [f] = q.failed();
   assert.deepEqual({ ...f, updatedAt: undefined }, {
     id: a.id, kind: 'move', sourceAssetId: 'a', memberId: M, status: 'failed', step: 'copied',
-    familyAssetId: 'fam-a', originals: ['a', 'a2'], familyIds: null, error: 'asset is in the trash', waitingSince: null, attempts: 0, retryAt: null,
+    familyAssetId: 'fam-a', originals: ['a', 'a2'], familyIds: null, error: 'asset is in the trash', waitingSince: null, attempts: 0, retryAt: null, albumId: null, albumName: null,
     updatedAt: undefined,
   });
   assert.equal(q.retry(a.id), true);

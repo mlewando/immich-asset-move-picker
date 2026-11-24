@@ -45,7 +45,8 @@ type Row = {
 };
 
 // from/to: the first and last day (YYYY-MM-DD, localDateTime) of the member's photos in it.
-export type Album = { id: string; name: string; count: number; from: string; to: string };
+// ownerName: whose album it is (it may be another user's that holds the member's photos).
+export type Album = { id: string; name: string; count: number; from: string; to: string; ownerName: string | null };
 
 /** Member timeline filter: 1 album, and/or a day range (YYYY-MM-DD, inclusive, localDateTime). */
 export type TimelineFilter = { albumId?: string; from?: string; to?: string };
@@ -139,7 +140,9 @@ export function memberAlbums(db: Db, memberId: string): Promise<Album[]> {
   const day = (agg: string) => `to_char(${agg}(a."localDateTime" AT TIME ZONE 'UTC'), 'YYYY-MM-DD')`;
   return db.query<Album>(
     `SELECT al.id, al."albumName" AS name, count(DISTINCT a.id)::int AS count,
-            ${day('min')} AS "from", ${day('max')} AS "to"
+            ${day('min')} AS "from", ${day('max')} AS "to",
+            (SELECT u.name FROM album_user ou JOIN "user" u ON u.id = ou."userId"
+              WHERE ou."albumId" = al.id AND ou.role = 'owner' LIMIT 1) AS "ownerName"
        FROM album al
        JOIN album_asset aa ON aa."albumId" = al.id
        JOIN asset a ON a.id = aa."assetId"

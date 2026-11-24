@@ -61,7 +61,11 @@ export const api = {
     return get(`/api/jobs/list?${q}`, opts);
   },
   jobEvents: (id, opts) => get(`/api/jobs/${id}/events`, opts),
-  move: (memberId, assetIds) => request('POST', '/api/moves', { memberId, assetIds }),
+  familyAlbums: () => get('/api/family/albums'),
+  // album: { id } | { name } (created unless it exists) | null; deleteAlbumId: the member's album
+  // to delete once its photos are moved. → { queued, alreadyQueued, queuedIds, album }
+  move: (memberId, assetIds, { album = null, deleteAlbumId } = {}) =>
+    request('POST', '/api/moves', { memberId, assetIds, ...(album ? { album } : {}), ...(deleteAlbumId ? { deleteAlbumId } : {}) }),
   giveBack: (assetIds) => request('POST', '/api/givebacks', { assetIds }),
   retryJob: (id) => request('POST', `/api/jobs/${id}/retry`),
   // Runs the guard now → { readOnly, problems }; the jobs go on if it passes.

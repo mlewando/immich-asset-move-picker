@@ -2,10 +2,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ImmichError } from '../src/immich/api.ts';
-import { isTransient, type GiveBackPlan, type GuardResult, type LinkResult, type VisibilityResult } from '../src/immich/index.ts';
+import {
+  isTransient, type GiveBackPlan, type GuardResult, type LinkResult, type SourceAlbum, type VisibilityResult,
+} from '../src/immich/index.ts';
 import { openQueue, type Queue } from '../src/queue.ts';
 import {
-  checkThumbnails, createWorker, LINK_MISMATCH, runGiveBack, runMove, THUMBNAIL_STALL_MS, type JobDeps,
+  checkThumbnails, createWorker, LINK_MISMATCH, runAlbumCleanups, runGiveBack, runMove, THUMBNAIL_STALL_MS, type JobDeps,
 } from '../src/worker.ts';
 
 const MEMBER = '00000000-0000-4000-8000-0000000a0001';
@@ -17,7 +19,7 @@ const silent = { info: () => {}, error: () => {} };
 // (a stack), default just itself. Each original is 1 file. Records calls in order.
 function fakeImmich(assets: Record<string, string>, units: Record<string, string[]> = {}) {
   const calls: string[] = [];
-  const failNext: { copyToFamily?: Error; archive?: Error; delete?: Error } = {};
+  const failNext: { copyToFamily?: Error; archive?: Error; delete?: Error; album?: Error } = {};
   // linkToFamily outcome per original id (default 'linked').
   const links: Record<string, LinkResult> = {};
   // Give back: family asset id → its plan (missing = "no original" refusal). family = existing ids.
@@ -31,7 +33,29 @@ function fakeImmich(assets: Record<string, string>, units: Record<string, string
   const inFamily = new Set<string>();
   // A picked id's files and uploads when not 1 per original (a live photo's video).
   const copies: Record<string, { files: number; uploaded: number }> = {};
+  // Family albums deleted in Immich (addToFamilyAlbum answers 'gone'); failNext.album: its error.
+  const goneAlbums = new Set<string>();
+  // Members' albums by id, as the delete rule sees them (missing = no such album).
+  const sources: Record<string, SourceAlbum> = {};
   const immich: JobDeps['immich'] = {
+    async addToFamilyAlbum(albumId, ids) {
+      if (failNext.album) {
+        const e = failNext.album;
+        delete failNext.album;
+        throw e;
+      }
+      calls.push(`album:${albumId}:${ids.join(',')}`);
+      return goneAlbums.has(albumId) ? 'gone' : 'added';
+    },
+    async sourceAlbum(albumId) {
+      return sources[albumId] ? structuredClone(sources[albumId]) : null;
+    },
+    async deleteSourceAlbum(albumId) {
+      if (!sources[albumId] || sources[albumId].blocking.length) return false;
+      calls.push(`deleteAlbum:${albumId}`);
+      delete sources[albumId];
+      return true;
+    },
     async albumsOf(ids) {
       return [...new Set(ids.flatMap((id) => albums[id] ?? []))].sort();
     },
@@ -92,7 +116,7 @@ function fakeImmich(assets: Record<string, string>, units: Record<string, string
       });
     },
   };
-  return { immich, calls, failNext, assets, links, plans, family, noThumbs, albums, inFamily, copies };
+  return { immich, calls, failNext, assets, links, plans, family, noThumbs, albums, inFamily, copies, goneAlbums, sources };
 }
 
 function setup(assets: Record<string, string>, units: Record<string, string[]> = {}) {
@@ -813,4 +837,142 @@ test('link: a file moved meanwhile is transient, a mismatch is not', async () =>
   s.links.a = { id: 'a', path: '/data/upload/a', result: 'mismatch', reason: 'size differs' };
   const differs = await runMove(s.deps, { ...m, step: 'archived' }).catch((e: unknown) => e);
   assert.equal(isTransient(differs), false);
+});
+
+// --- Moves into a family album, and deleting the source album ---------------------------------
+const TRIP = { id: '00000000-0000-4000-8000-0000000a1b01', name: 'Trip' };
+const SRC = '00000000-0000-4000-8000-0000000a1b02';
+const GARDEN = { albumId: SRC, albumName: 'Garden' };
+const source = (over: Partial<SourceAlbum> = {}): SourceAlbum => ({
+  id: SRC, name: 'Garden', ownerName: 'Anna', blocking: [], sharedWith: [], links: 0, comments: 0, ...over,
+});
+const albumEvents = (q: Queue, id: number) =>
+  q.events(id)!.filter((e) => e.type === 'album').map((e) => [e.outcome, e.message]);
+
+test('move into an album: the family copy goes in after the copy, before the archive', async () => {
+  const s = setup({ a: 'timeline' });
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER, album: TRIP });
+  const m = s.queue.claimNext()!;
+  await runMove(s.deps, m);
+  assert.deepEqual(s.calls, ['copy:a', `album:${TRIP.id}:fam-a`, 'archive:a', 'link:a', 'thumbs:a']);
+  const albumed = s.queue.events(m.id)!.find((e) => e.step === 'albumed');
+  assert.deepEqual([albumed?.type, albumed?.message, albumed?.outcome], ['step', 'Album «Trip»', null]);
+});
+
+test('move into an album: a stack goes in by its primary (as Immich does), once', async () => {
+  const s = setup({ p: 'timeline', b: 'timeline' }, { p: ['p', 'b'] });
+  s.queue.enqueue('move', ['p'], { memberId: MEMBER, album: TRIP });
+  await runMove(s.deps, s.queue.claimNext()!);
+  assert.deepEqual(s.calls.filter((c) => c.startsWith('album:')), [`album:${TRIP.id}:fam-p`]);
+});
+
+test('move into an album deleted meanwhile: not added, the move goes on and says so', async () => {
+  const s = setup({ a: 'timeline' });
+  s.goneAlbums.add(TRIP.id);
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER, album: TRIP });
+  const m = s.queue.claimNext()!;
+  assert.equal(await runMove(s.deps, m), 'done');
+  assert.equal(s.assets.a, 'archive');
+  const albumed = s.queue.events(m.id)!.find((e) => e.step === 'albumed');
+  assert.equal(albumed?.outcome, 'gone');
+});
+
+test('move into an album refused by Immich: fails before the archive; Retry adds it, copies nothing again', async () => {
+  const s = setup({ a: 'timeline' });
+  s.failNext.album = new Error('not added to the album: no_permission');
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER, album: TRIP });
+  const wk = createWorker({ ...s.deps, guard: async () => ok, log: silent, retryDelaysMs: [0] });
+  wk.kick();
+  await wk.idle();
+  const f = row(s.queue)!;
+  assert.deepEqual([f.step, f.error, f.attempts], ['copied', 'not added to the album: no_permission', 0], 'a refusal: not retried on its own');
+  assert.equal(s.assets.a, 'timeline', 'the original stays on the timeline');
+  s.queue.retry(f.id);
+  wk.kick();
+  await wk.idle();
+  assert.deepEqual(s.calls, ['copy:a', `album:${TRIP.id}:fam-a`, 'archive:a', 'link:a', 'thumbs:a']);
+});
+
+test('move into an album: a resume after the album step does not add it again', async () => {
+  const s = setup({ a: 'timeline' });
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER, album: TRIP });
+  const m = s.queue.claimNext()!;
+  s.queue.advance(m.id, { step: 'albumed', familyAssetId: 'fam-a', originals: ['a'] });
+  await runMove(s.deps, { ...m, step: 'albumed', familyAssetId: 'fam-a', originals: ['a'] });
+  assert.deepEqual(s.calls, ['archive:a', 'link:a', 'thumbs:a']);
+});
+
+test("album cleanup: nothing left on a timeline → deleted, with what went, in the newest job's history", async () => {
+  const s = setup({ a: 'timeline', b: 'timeline' });
+  s.sources[SRC] = source({ sharedWith: ['Bob'], links: 1, comments: 2 });
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER, cleanup: GARDEN });
+  s.queue.enqueue('move', ['b'], { memberId: MEMBER, cleanup: GARDEN });
+  assert.equal(s.queue.openCleanups().length, 1, 'the same album: 1 request');
+  assert.equal(await runAlbumCleanups(s.deps), 1);
+  assert.deepEqual(s.calls, [`deleteAlbum:${SRC}`]);
+  assert.deepEqual(s.queue.openCleanups(), []);
+  assert.deepEqual(albumEvents(s.queue, 1), []);
+  assert.deepEqual(albumEvents(s.queue, 2), [
+    ['deleted', "Anna's album «Garden» deleted, with its sharing with Bob, 1 shared link, comments and likes (2)"],
+  ]);
+});
+
+test('album cleanup: photos left that were not moved → kept and closed for good', async () => {
+  const s = setup({ a: 'timeline' });
+  s.sources[SRC] = source({ blocking: [{ id: 'x', primaryId: null }, { id: 'y', primaryId: null }] });
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER, cleanup: GARDEN });
+  assert.equal(await runAlbumCleanups(s.deps), 1);
+  assert.deepEqual(s.calls, []);
+  assert.deepEqual(albumEvents(s.queue, 1), [['kept', "Anna's album «Garden» kept: 2 photos still on the timeline"]]);
+  s.sources[SRC]!.blocking = [];
+  assert.equal(await runAlbumCleanups(s.deps), 0, 'a later archive deletes nothing');
+  assert.ok(s.sources[SRC]);
+});
+
+test('album cleanup: a photo left with a failed move (also by its stack) → stays open; deleted once Retry moved it', async () => {
+  const s = setup({ p: 'trash' });
+  s.queue.enqueue('move', ['p'], { memberId: MEMBER, cleanup: GARDEN });
+  s.queue.fail(s.queue.claimNext()!.id, 'asset is trash');
+  // A non-primary stack member of the failed move is what is left in the album.
+  s.sources[SRC] = source({ blocking: [{ id: 'm', primaryId: 'p' }] });
+  assert.equal(await runAlbumCleanups(s.deps), 0);
+  assert.equal(s.queue.openCleanups().length, 1);
+  s.sources[SRC]!.blocking = [];
+  assert.equal(await runAlbumCleanups(s.deps), 1);
+  assert.deepEqual(s.calls, [`deleteAlbum:${SRC}`]);
+});
+
+test('album cleanup: album already gone → closed, says so', async () => {
+  const s = setup({ a: 'timeline' });
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER, cleanup: GARDEN });
+  assert.equal(await runAlbumCleanups(s.deps), 1);
+  assert.deepEqual(albumEvents(s.queue, 1), [['gone', 'Album «Garden» no longer exists']]);
+});
+
+test('worker: album cleanups wait until no job is pending or running', async () => {
+  const s = setup({ a: 'timeline', b: 'timeline' });
+  s.sources[SRC] = source();
+  s.noThumbs.add('a');
+  s.queue.enqueue('move', ['a', 'b'], { memberId: MEMBER, cleanup: GARDEN });
+  const wk = createWorker({ ...s.deps, guard: async () => ok, log: silent, waitCheckMs: 0 });
+  wk.kick();
+  await wk.idle();
+  assert.equal(s.queue.counts().pending, 1, 'a waits for its thumbnails');
+  assert.ok(s.sources[SRC], 'not deleted while a move is pending');
+  s.noThumbs.delete('a');
+  wk.kick();
+  await wk.idle();
+  assert.equal(s.queue.counts().done, 2);
+  assert.equal(s.sources[SRC], undefined, 'deleted once the queue is empty');
+});
+
+test('worker: a failed job does not hold back album cleanups', async () => {
+  const s = setup({ a: 'trash' });
+  s.sources[SRC] = source();
+  s.queue.enqueue('move', ['a'], { memberId: MEMBER, cleanup: GARDEN });
+  const wk = createWorker({ ...s.deps, guard: async () => ok, log: silent });
+  wk.kick();
+  await wk.idle();
+  assert.equal(s.queue.counts().failed, 1);
+  assert.equal(s.sources[SRC], undefined);
 });

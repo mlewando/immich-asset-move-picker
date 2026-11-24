@@ -33,8 +33,11 @@ export const EXPECTED_COLUMNS: Record<string, string[]> = {
     'livePhotoCID', 'lockedProperties',
   ],
   stack: ['id', 'primaryAssetId', 'ownerId'],
-  album: ['id', 'albumName', 'deletedAt'],
+  album: ['id', 'albumName', 'deletedAt', 'albumThumbnailAssetId', 'updatedAt'],
   album_asset: ['albumId', 'assetId'],
+  album_user: ['albumId', 'userId', 'role'],
+  shared_link: ['albumId'],
+  activity: ['albumId'],
   user: ['id', 'name', 'email', 'deletedAt'],
 };
 
@@ -43,7 +46,22 @@ export const EXPECTED_ENUMS: Record<string, string[]> = {
   asset_visibility_enum: ['archive', 'timeline', 'hidden', 'locked'],
   assets_status_enum: ['active', 'trashed', 'deleted'],
   asset_checksum_algorithm_enum: ['sha1', 'sha1-path'],
+  album_user_role_enum: ['owner', 'editor', 'viewer'],
 };
+
+// Whole-table privileges for deleting a source album (albums.ts): the DELETE, and the audit rows
+// Immich's triggers write for it (they run as the caller; its foreign-key cascades don't need any).
+export const EXPECTED_TABLE_WRITES: [table: string, privilege: 'DELETE' | 'INSERT'][] = [
+  ['album', 'DELETE'],
+  ['album_audit', 'INSERT'],
+  ['album_user_audit', 'INSERT'],
+  ['album_asset_audit', 'INSERT'],
+];
+
+// What the family API key must allow (README); 'all' allows everything.
+export const REQUIRED_KEY_PERMISSIONS: readonly string[] = [
+  'asset.upload', 'asset.update', 'asset.delete', 'stack.create', 'user.read', 'album.create', 'albumAsset.create',
+];
 
 // Columns the picker's role must be able to UPDATE (visibility.ts): asset.visibility, and the
 // asset_face columns Immich's trigger asset_face_update_asset_state copies it into (the trigger
@@ -58,20 +76,35 @@ export const EXPECTED_WRITES: [table: string, column: string][] = [
 export type GuardResult = { ok: boolean; problems: string[]; checkedAt: Date };
 
 export async function checkGuard(deps: {
-  api: Pick<ImmichApi, 'getServerVersion'>;
+  api: Pick<ImmichApi, 'getServerVersion' | 'getMyPermissions'>;
   db: Db;
   now?: () => Date;
   quick?: boolean;
 }): Promise<GuardResult> {
   const problems: string[] = [];
   await Promise.all([
-    checkVersion(deps.api, problems, deps.quick ?? false),
+    // The key only once Immich answered: an unreachable Immich is 1 problem, not 2.
+    checkVersion(deps.api, problems, deps.quick ?? false).then(async (answered) => {
+      if (answered) await checkKey(deps.api, problems);
+    }),
     checkSchema(deps.db, problems),
   ]);
   return { ok: problems.length === 0, problems, checkedAt: (deps.now ?? (() => new Date()))() };
 }
 
-async function checkVersion(api: Pick<ImmichApi, 'getServerVersion'>, problems: string[], quick: boolean): Promise<void> {
+async function checkKey(api: Pick<ImmichApi, 'getMyPermissions'>, problems: string[]): Promise<void> {
+  try {
+    const have = new Set(await api.getMyPermissions());
+    if (have.has('all')) return;
+    const missing = REQUIRED_KEY_PERMISSIONS.filter((p) => !have.has(p));
+    if (missing.length) problems.push(`family API key lacks permissions: ${missing.join(', ')}`);
+  } catch (err) {
+    problems.push(`API key check failed: ${(err as Error).message}`);
+  }
+}
+
+/** Returns whether Immich answered (whatever the version). */
+async function checkVersion(api: Pick<ImmichApi, 'getServerVersion'>, problems: string[], quick: boolean): Promise<boolean> {
   try {
     const v = await api.getServerVersion().catch((err: unknown) => {
       if (quick || !isTransient(err)) throw err;
@@ -81,8 +114,10 @@ async function checkVersion(api: Pick<ImmichApi, 'getServerVersion'>, problems: 
     if (!SUPPORTED_IMMICH_VERSIONS.includes(actual)) {
       problems.push(`Immich version ${actual} not supported (supported: ${SUPPORTED_IMMICH_VERSIONS.join(', ')})`);
     }
+    return true;
   } catch (err) {
     problems.push(`Immich version check failed: ${(err as Error).message}`);
+    return false;
   }
 }
 
@@ -119,7 +154,7 @@ async function checkSchema(db: Db, problems: string[]): Promise<void> {
       }
     }
 
-    // The picker's only write: asset.visibility, plus what Immich's trigger copies it into.
+    // asset.visibility, plus what Immich's trigger copies it into.
     const writes = await db.query<{ t: string; c: string; ok: boolean }>(
       `SELECT t, c, has_column_privilege(format('public.%I', t), c, 'UPDATE') AS ok
          FROM unnest($1::text[], $2::text[]) AS w(t, c)`,
@@ -127,6 +162,14 @@ async function checkSchema(db: Db, problems: string[]): Promise<void> {
     );
     const denied = writes.filter((w) => !w.ok).map((w) => `${w.t}.${w.c}`);
     if (denied.length) problems.push(`no UPDATE grant on: ${denied.join(', ')}`);
+
+    const tableWrites = await db.query<{ t: string; p: string; ok: boolean }>(
+      `SELECT t, p, has_table_privilege(format('public.%I', t), p) AS ok
+         FROM unnest($1::text[], $2::text[]) AS w(t, p)`,
+      [EXPECTED_TABLE_WRITES.map(([t]) => t), EXPECTED_TABLE_WRITES.map(([, p]) => p)],
+    );
+    const deniedTables = tableWrites.filter((w) => !w.ok).map((w) => `${w.p} on ${w.t}`);
+    if (deniedTables.length) problems.push(`no grant: ${deniedTables.join(', ')}`);
   } catch (err) {
     problems.push(`schema check failed: ${(err as Error).message}`);
   }

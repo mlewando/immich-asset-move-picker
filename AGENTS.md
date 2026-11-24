@@ -17,8 +17,10 @@ first.
   read-only on anything else. Add a version only after `npm run test:int` passes against it.
 - All knowledge of Immich (API, database schema, file layout, quirks) stays in `src/immich/`;
   the rest of the app uses only `src/immich/index.ts`.
-- Nothing of the picker lives in Immich's database: its only write there is `asset.visibility`
-  (archive ⇄ timeline). Its own state is the SQLite job queue.
+- Nothing of the picker lives in Immich's database: its only writes there are `asset.visibility`
+  (archive ⇄ timeline) and deleting a member's album whose photos are all moved (as Immich's own
+  delete does). Everything else goes through Immich's API as the family account. Its own state is
+  the SQLite job queue.
 - Never delete a photo that has no other copy. Every job step is safe to repeat.
 - The settings, API key permissions and database grants in `README.md` are what deployments rely
   on: changing them is a breaking change; say so.

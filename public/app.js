@@ -9,6 +9,7 @@ import { Grid } from './grid.js';
 import { Icon } from './icons.js';
 import { keepAlive } from './expiry.js';
 import { ConfirmDialog } from './confirm.js';
+import { MoveDialog, rememberAlbum } from './movedialog.js';
 import { CheckAgain, JobsIndicator, StorageTemplateReminder, useJobs } from './jobs.js';
 import { giveBackQuestion, queuedMessage } from './messages.js';
 import { QueuePage } from './queue.js';
@@ -499,20 +500,24 @@ function App() {
   const readOnly = status?.readOnly ?? true;
   const tooMany = selected.size > MAX_PER_REQUEST;
   const [asking, setAsking] = useState(null); // the Give back question while open: { ids, byKeyboard }
+  const [moving, setMoving] = useState(null); // the Move dialog while open: { ids, byKeyboard }
   // Another page or a read-only picker under an open question: it no longer applies.
-  useEffect(() => setAsking(null), [gridKey, readOnly]);
-  const queue = useCallback(async (ids, byKeyboard) => {
+  useEffect(() => (setAsking(null), setMoving(null)), [gridKey, readOnly]);
+  // moveTo: the Move dialog's answer ({ album, deleteAlbumId }).
+  const queue = useCallback(async (ids, byKeyboard, moveTo) => {
     try {
-      const r = route.kind === 'family' ? await api.giveBack(ids) : await api.move(route.id, ids);
+      const r = route.kind === 'family' ? await api.giveBack(ids) : await api.move(route.id, ids, moveTo);
+      if (r.album) rememberAlbum(r.album.id);
       // Queued now or already: either way each has an unfinished job, so it leaves the grid.
       refocusIf(byKeyboard);
       drop(ids);
       // What can't be moved shows up as failed in the jobs indicator (the worker decides).
       // The files of what this click queued, when more than its photos (live photos, stacks).
       const files = fileCount(items, r.queuedIds);
+      const text = queuedMessage(items, r, files);
       setToast({
         kind: 'ok',
-        text: queuedMessage(items, r, files),
+        text: r.album && text ? `${text} → «${r.album.name}»${r.album.created ? ' (new album)' : ''}` : text,
         action: { label: 'View in queue', run: () => navigate('/queue') },
       });
       refreshJobs();
@@ -530,9 +535,10 @@ function App() {
     const byKeyboard = e?.detail === 0;
     const ids = [...selected];
     // Give back deletes family copies (each has an original that goes back first): ask once.
+    // Move: ask which family album.
     if (route.kind === 'family') setAsking({ ids, byKeyboard });
-    else queue(ids, byKeyboard);
-  }, [selected, tooMany, route.kind, queue]);
+    else setMoving({ ids, byKeyboard });
+  }, [selected, tooMany, route.kind]);
   const action = {
     label: route.kind === 'family' ? 'Give back' : 'Move to family',
     disabled: readOnly,
@@ -543,7 +549,7 @@ function App() {
         ? TOO_MANY
         : route.kind === 'family'
           ? 'Put the originals back on the members’ timelines and delete these family copies'
-          : 'Copy to the family account and archive the originals',
+          : 'Copy into a family album and archive the originals',
     run: runSelected,
   };
   // The worker paused or went on (the jobs poll saw it): the read-only banner follows at once,
@@ -799,6 +805,17 @@ function App() {
         const { ids, byKeyboard } = asking;
         setAsking(null);
         queue(ids, byKeyboard);
+      }}
+    />`}
+    ${moving &&
+    html`<${MoveDialog}
+      count=${moving.ids.length}
+      source=${(route.filter?.album && albums.find((a) => a.id === route.filter.album)) || null}
+      onCancel=${() => setMoving(null)}
+      onConfirm=${(moveTo) => {
+        const { ids, byKeyboard } = moving;
+        setMoving(null);
+        queue(ids, byKeyboard, moveTo);
       }}
     />`}
     <div class="sr-only" aria-live="polite">${announcement}</div>

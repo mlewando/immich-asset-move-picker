@@ -28,8 +28,19 @@ original through a hard link.
 _Avoid_: duplicate
 
 **Move to family**:
-Copy a member's photo into the family account, archive the original, hard-link the 2 files.
+Copy a member's photo into the family account (into a family album, rarely none), archive the
+original, hard-link the 2 files.
 _Avoid_: copy, share
+
+**Family album**:
+An album owned by the family account, that a move puts the family copies into. Picked or created
+(by name) in the Move dialog. The picker never deletes one.
+
+**Source album**:
+The member's album the grid is filtered by when moving. Deleted at the curator's request once
+nothing in it is on a timeline any more; an **album cleanup** (request) waits for that in the
+queue.
+_Avoid_: member album (any album holding a member's photos)
 
 **Give back**:
 Reverse a move: permanently delete the family copy, return every original to its owner's

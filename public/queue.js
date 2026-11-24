@@ -7,7 +7,7 @@ import htm from 'htm';
 import { api, media } from './api.js';
 import { Icon } from './icons.js';
 import { expiry } from './expiry.js';
-import { ago, eventOf, kindLabel, STEPS, stateOf, tileLabel, time, TONE } from './jobstate.js';
+import { ago, eventOf, kindLabel, stateOf, stepsOf, tileLabel, time, TONE } from './jobstate.js';
 import { useLostFocus, useRovingFocus } from './roving.js';
 import { Thumb } from './thumb.js';
 
@@ -188,7 +188,7 @@ function Enlarged({ job, onClose }) {
 
 /** The job's steps as dots on a line: done, the one it is at (or stopped before), still to do. */
 function Steps({ job }) {
-  const steps = STEPS[job.kind];
+  const steps = stepsOf(job);
   const at = steps.findIndex(([s]) => s === job.step);
   const done = job.status === 'done';
   const current = done ? -1 : at + 1; // the step being worked on (or that failed)
@@ -391,6 +391,7 @@ function Detail({ job, closing, memberName, readOnly, onRetry, toast, onClose })
           <${Steps} job=${job} />
           <dl class="grid grid-cols-2 gap-x-4 gap-y-3">
             ${fact('Member', memberName)}
+            ${fact('Family album', job.albumName)}
             ${fact('Requested by', job.requestedBy)}
             ${fact('Queued', time(job.createdAt))}
             ${fact('Job', `#${job.id}`)}

@@ -4,9 +4,9 @@
 import { openSqlite, transaction, type Row } from './sqlite.ts';
 
 // The last completed step. Each step's Immich call is safe to repeat, so a resume re-runs the next.
-//   move:     queued → copied → archived → linked → thumbnailed (done)
+//   move:     queued → copied → [albumed, when moved into an album] → archived → linked → thumbnailed (done)
 //   giveback: queued → restored → deleted (done)
-export const STEPS = ['queued', 'copied', 'archived', 'linked', 'thumbnailed', 'restored', 'deleted'] as const;
+export const STEPS = ['queued', 'copied', 'albumed', 'archived', 'linked', 'thumbnailed', 'restored', 'deleted'] as const;
 export type Step = (typeof STEPS)[number];
 export type JobStatus = 'pending' | 'running' | 'done' | 'failed';
 export type Kind = 'move' | 'giveback';
@@ -33,7 +33,18 @@ export type Job = {
   attempts: number;
   // While pending after a transient failure: when to try again (ISO), else null.
   retryAt: string | null;
+  // move: the family album it goes into, and its name when queued (for the page); null = none.
+  albumId: string | null;
+  albumName: string | null;
 };
+
+/**
+ * A curator's "delete this member's album once all its photos are moved", open until the worker
+ * decides it (see AlbumCleanupOutcome).
+ */
+export type AlbumCleanup = { id: number; albumId: string; albumName: string };
+// deleted; kept (photos still on a timeline); gone (deleted by someone else meanwhile).
+export type AlbumCleanupOutcome = 'deleted' | 'kept' | 'gone';
 
 export type FailedJob = Job & { updatedAt: string };
 
@@ -51,15 +62,18 @@ export type JobEvent = {
   at: string;
   // queued; step (a step done); waiting (for Immich's thumbnails); retrying (a transient failure,
   // tried again later on its own); failed (waits for Retry); retried (the curator's Retry);
-  // resumed (after a restart); done.
-  type: 'queued' | 'step' | 'waiting' | 'retrying' | 'failed' | 'retried' | 'resumed' | 'done';
+  // resumed (after a restart); done; album (the source album deleted or kept, see AlbumCleanup:
+  // outcome says which).
+  type: 'queued' | 'step' | 'waiting' | 'retrying' | 'failed' | 'retried' | 'resumed' | 'done' | 'album';
   step: Step;
   message: string | null;
   // The curator (queued, retried), when known.
   by: string | null;
   // The 'copied' step when nothing was uploaded: 'existing' = the family account already had the
   // photo; 'unknown' = it had it on a later try, so maybe from this job's own earlier try.
-  outcome: CopyOutcome | null;
+  // The 'albumed' step: 'gone' = the album no longer existed, nothing added. An 'album' entry: how
+  // the request ended.
+  outcome: CopyOutcome | 'gone' | AlbumCleanupOutcome | null;
 };
 export type CopyOutcome = 'existing' | 'unknown';
 
@@ -71,7 +85,25 @@ export type Queue = {
    * Queues 1 job per asset; returns the ids queued (an asset with an unfinished job is skipped).
    * A move names the member it moves from; requestedBy is the curator's email (null with no login).
    */
-  enqueue(kind: Kind, assetIds: string[], who?: { memberId?: string | null; requestedBy?: string | null }): string[];
+  enqueue(
+    kind: Kind,
+    assetIds: string[],
+    who?: {
+      memberId?: string | null;
+      requestedBy?: string | null;
+      // move: into this family album (its name for the page).
+      album?: { id: string; name: string } | null;
+      // move: delete this member's album once all its photos are moved (an open request for the
+      // same album is reused).
+      cleanup?: { albumId: string; albumName: string } | null;
+    },
+  ): string[];
+  /** The open "delete album" requests, oldest first. */
+  openCleanups(): AlbumCleanup[];
+  /**
+   * Closes a request; the message goes into the history of its newest job (if any is left).
+   */
+  closeCleanup(id: number, outcome: AlbumCleanupOutcome, message: string): void;
   /** After a restart: jobs that were running go back to pending, keeping their step. */
   resetRunning(): number;
   /** The oldest pending job that isn't waiting (see wait) or due later (see retryLater), now running; null when none. */
@@ -81,7 +113,7 @@ export type Queue = {
     // note: shown with this step in the job history; outcome: see JobEvent.
     patch: {
       step: Step; familyAssetId?: string; originals?: string[]; familyIds?: string[]; done?: boolean; note?: string;
-      outcome?: CopyOutcome;
+      outcome?: CopyOutcome | 'gone';
     },
   ): void;
   fail(id: number, error: string): void;
@@ -171,6 +203,22 @@ export const MIGRATIONS = [
    CREATE INDEX job_event_job ON job_event (job_id, id);`,
   // How a step went, where its history line depends on it (see JobEvent.outcome).
   `ALTER TABLE job_event ADD COLUMN outcome TEXT;`,
+  // Moves into a family album, and requests to delete a member's album once its photos are moved.
+  `ALTER TABLE job ADD COLUMN album_id TEXT;
+   ALTER TABLE job ADD COLUMN album_name TEXT;
+   ALTER TABLE job ADD COLUMN cleanup_id INTEGER;
+   CREATE TABLE album_cleanup (
+     id            INTEGER PRIMARY KEY,
+     album_id      TEXT    NOT NULL,
+     album_name    TEXT    NOT NULL,
+     requested_by  TEXT,
+     created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ')),
+     closed_at     TEXT,
+     outcome       TEXT
+   );
+   -- At most 1 open request per album.
+   CREATE UNIQUE INDEX album_cleanup_open ON album_cleanup (album_id) WHERE closed_at IS NULL;
+   CREATE INDEX job_cleanup ON job (cleanup_id);`,
 ];
 
 const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ')`;
@@ -195,6 +243,8 @@ const toJob = (r: Row): Job => {
     waitingSince: (r.waiting_since as string | null) ?? null,
     attempts: Number(r.attempts ?? 0),
     retryAt: (r.retry_at as string | null) ?? null,
+    albumId: (r.album_id as string | null) ?? null,
+    albumName: (r.album_name as string | null) ?? null,
   };
 };
 
@@ -204,7 +254,16 @@ export function openQueue(path: string): Queue {
 
   const sql = {
     insert: db.prepare(
-      `INSERT OR IGNORE INTO job (kind, source_asset_id, member_id, requested_by) VALUES (?, ?, ?, ?) RETURNING id`,
+      `INSERT OR IGNORE INTO job (kind, source_asset_id, member_id, requested_by, album_id, album_name, cleanup_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+    ),
+    openCleanupOf: db.prepare(`SELECT id FROM album_cleanup WHERE album_id = ? AND closed_at IS NULL`),
+    insertCleanup: db.prepare(`INSERT INTO album_cleanup (album_id, album_name, requested_by) VALUES (?, ?, ?) RETURNING id`),
+    openCleanups: db.prepare(`SELECT id, album_id, album_name FROM album_cleanup WHERE closed_at IS NULL ORDER BY id`),
+    closeCleanup: db.prepare(`UPDATE album_cleanup SET closed_at = ${NOW}, outcome = ? WHERE id = ? AND closed_at IS NULL`),
+    cleanupEvent: db.prepare(
+      `INSERT INTO job_event (job_id, type, step, message, outcome)
+       SELECT id, 'album', step, ?, ? FROM job WHERE cleanup_id = ? ORDER BY id DESC LIMIT 1`,
     ),
     // 1 history entry, at the job's current step.
     event: db.prepare(
@@ -275,6 +334,7 @@ export function openQueue(path: string): Queue {
       `DELETE FROM job_event WHERE job_id IN (SELECT id FROM job WHERE status = 'done' AND updated_at < ?)`,
     ),
     pruneJobs: db.prepare(`DELETE FROM job WHERE status = 'done' AND updated_at < ?`),
+    pruneCleanups: db.prepare(`DELETE FROM album_cleanup WHERE closed_at < ?`),
     unfinished: db.prepare(
       `SELECT source_asset_id, original_ids, family_ids FROM job
         WHERE kind = ? AND status IN ('pending', 'running', 'failed')`,
@@ -291,7 +351,7 @@ export function openQueue(path: string): Queue {
     type: JobEvent['type'],
     message: string | null = null,
     by: string | null = null,
-    outcome: CopyOutcome | null = null,
+    outcome: JobEvent['outcome'] = null,
   ) => void sql.event.run(type, message, by, outcome, id);
 
   const toListed = (r: Row): ListedJob => ({
@@ -303,15 +363,32 @@ export function openQueue(path: string): Queue {
   });
 
   return {
-    enqueue(kind, assetIds, { memberId = null, requestedBy = null } = {}) {
-      return transaction(db, () =>
-        assetIds.filter((assetId) => {
-          const r = sql.insert.get(kind, assetId, memberId, requestedBy) as Row | undefined;
+    enqueue(kind, assetIds, { memberId = null, requestedBy = null, album = null, cleanup = null } = {}) {
+      return transaction(db, () => {
+        let cleanupId: number | null = null;
+        if (cleanup) {
+          const open = sql.openCleanupOf.get(cleanup.albumId) as Row | undefined;
+          cleanupId = Number(open?.id ?? (sql.insertCleanup.get(cleanup.albumId, cleanup.albumName, requestedBy) as Row).id);
+        }
+        return assetIds.filter((assetId) => {
+          const r = sql.insert.get(kind, assetId, memberId, requestedBy, album?.id ?? null, album?.name ?? null, cleanupId) as
+            | Row
+            | undefined;
           if (r) event(Number(r.id), 'queued', null, requestedBy);
           return r !== undefined;
-        }),
-      );
+        });
+      });
     },
+    openCleanups: () =>
+      (sql.openCleanups.all() as Row[]).map((r) => ({
+        id: Number(r.id),
+        albumId: r.album_id as string,
+        albumName: r.album_name as string,
+      })),
+    closeCleanup: (id, outcome, message) =>
+      transaction(db, () => {
+        if (Number(sql.closeCleanup.run(outcome, id).changes)) sql.cleanupEvent.run(message, outcome, id);
+      }),
     resetRunning: () =>
       transaction(db, () => {
         sql.resumedEvents.run();
@@ -380,13 +457,14 @@ export function openQueue(path: string): Queue {
         step: r.step as Step,
         message: (r.message as string | null) ?? null,
         by: (r.by as string | null) ?? null,
-        outcome: (r.outcome as CopyOutcome | null) ?? null,
+        outcome: (r.outcome as JobEvent['outcome']) ?? null,
       }));
     },
     prune: (before) =>
       transaction(db, () => {
         const t = before.toISOString();
         sql.pruneEvents.run(t);
+        sql.pruneCleanups.run(t);
         return Number(sql.pruneJobs.run(t).changes);
       }),
     unfinishedAssetIds(kind) {

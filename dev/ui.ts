@@ -9,7 +9,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { notices, sendNotice, type Notice } from '../src/auth.ts';
-import type { GridItem, GuardResult } from '../src/immich/index.ts';
+import type { FamilyAlbum, GridItem, GuardResult } from '../src/immich/index.ts';
 import { openQueue, type Job, type Queue, type Step } from '../src/queue.ts';
 import { buildApp, type ServerImmich } from '../src/server.ts';
 import { FAMILY_ID } from '../test/fakes.ts';
@@ -112,7 +112,7 @@ const byId = new Map(anna.map((p) => [p.id, p]));
 // Newest first, as Immich's query returns them.
 const annaAlbums = [...albumPhotos].map(([id, a]) => {
   const days = [...a.ids].map((i) => byId.get(i)!.day).sort();
-  return { id, name: a.name, count: a.ids.size, from: days[0]!, to: days.at(-1)! };
+  return { id, name: a.name, count: a.ids.size, from: days[0]!, to: days.at(-1)!, ownerName: 'Anna' };
 });
 annaAlbums.sort((a, b) => b.to.localeCompare(a.to));
 const albumsOf = (assetId: string) => [...albumPhotos.values()].filter((a) => a.ids.has(assetId)).map((a) => a.name).sort();
@@ -138,6 +138,34 @@ const bob = run('2026-10-10', 3).flatMap((day) => Array.from({ length: 4 }, () =
 const family = run('2026-10-20', 3).flatMap((day, d) =>
   Array.from({ length: 5 }, (_, i) => photo('family', day, d === 2 && i === 4 ? { noOrigin: true } : {})),
 );
+// The family's albums to move into (with the `albums` flag of a scenario; empty without). Covers
+// are family photos; 1 album is empty (no cover, no dates), 1 has a name only in letter case
+// different from a member's album. Enough of them that the dialog's list scrolls.
+const familyAlbumList: FamilyAlbum[] = [
+  { name: 'Wakacje 2026', count: 128, from: '2026-07-01', to: '2026-07-21', cover: 0 },
+  { name: 'Garden', count: 42, from: '2026-04-12', to: '2026-10-02', cover: 3 },
+  { name: 'Babcia i dziadek', count: 7, from: '2025-12-24', to: '2026-01-02', cover: 6 },
+  { name: 'Birthday party', count: 15, from: '2025-06-07', to: '2025-06-07', cover: 9 },
+  { name: 'To sort later', count: 0, from: null, to: null, cover: null },
+  ...[
+    'Ferie w górach', 'First day of school', 'Christmas 2025', 'Easter', 'Mazury', 'Kayaking',
+    'Zoo', 'Wedding of Kasia and Tomek', 'New Year’s Eve', 'Grandpa’s 80th birthday', 'Kraków weekend',
+    'Bike trips', 'School play', 'Autumn walks', 'Snow!', 'Pets', 'Concert', 'A very long album name that does not fit on 1 line of the dialog',
+  ].map((name, i) => {
+    const month = String((i % 12) + 1).padStart(2, '0');
+    const year = 2025 - Math.floor(i / 12);
+    return { name, count: 3 + ((i * 7) % 60), from: `${year}-${month}-01`, to: `${year}-${month}-${10 + (i % 18)}`, cover: (i + 1) % family.length };
+  }),
+].map((a, i) => ({
+  id: uuid(0xfa00 + i),
+  name: a.name,
+  count: a.count,
+  from: a.from,
+  to: a.to,
+  coverId: a.cover === null ? null : family[a.cover]!.id,
+  updatedAt: new Date(Date.now() - i * 86_400_000).toISOString(),
+}));
+
 // New uploads whose thumbnails Immich is still making, and some it never will (thumbnails scenario).
 const fresh = run('2026-11-20', 1).flatMap((day) => Array.from({ length: 8 }, () => photo('family', day)));
 // Photos only the long queues use (a photo can have 1 unfinished job only), on no timeline.
@@ -157,7 +185,7 @@ type World = {
 };
 const allPhotos = () => ({ [ANNA]: anna, [BOB]: bob, [FAMILY_ID]: family });
 const FETCH_FAILED = 'Immich POST /assets: fetch failed (UND_ERR_SOCKET other side closed)';
-const MOVE_STEPS: Step[] = ['copied', 'archived', 'linked', 'thumbnailed'];
+const MOVE_STEPS: Step[] = ['copied', 'albumed', 'archived', 'linked', 'thumbnailed'];
 const later = (min: number) => new Date(Date.now() + min * 60_000);
 
 /** Seeding helpers bound to 1 queue. */
@@ -169,7 +197,7 @@ function seeder(queue: Queue) {
     return job;
   };
   const moveTo = (job: Job, upTo: number) => {
-    for (const step of MOVE_STEPS.slice(0, upTo)) {
+    for (const step of MOVE_STEPS.filter((s) => s !== 'albumed').slice(0, upTo)) {
       queue.advance(job.id, {
         step,
         familyAssetId: step === 'copied' ? family[job.id % family.length]!.id : undefined,
@@ -365,6 +393,23 @@ const immich: ServerImmich = {
   },
   fileNames: async (ids) => new Map(ids.filter((id) => names[id]).map((id) => [id, names[id]!])),
   ping: async () => ({ db: 'ok', api: 'ok' }),
+  familyAlbums: async () => (world.albums ? familyAlbumList : []),
+  async familyAlbumNamed(name) {
+    const wanted = name.trim();
+    const found = familyAlbumList.find((a) => a.name.toLowerCase() === wanted.toLowerCase());
+    if (found) return { id: found.id, name: found.name, created: false };
+    const album = { id: uuid(0xfb00 + familyAlbumList.length), name: wanted, count: 0, from: null, to: null, coverId: null, updatedAt: new Date().toISOString() };
+    familyAlbumList.unshift(album);
+    return { id: album.id, name: album.name, created: true };
+  },
+  // Anna's albums: what is left of them on her timeline keeps them.
+  async sourceAlbum(id) {
+    const a = albumPhotos.get(id);
+    if (!a) return null;
+    const onTimeline = new Set((world.timelines[ANNA] ?? []).map((p) => p.id));
+    const blocking = [...a.ids].filter((p) => onTimeline.has(p)).map((p) => ({ id: p, primaryId: null }));
+    return { id, name: a.name, ownerName: 'Anna', blocking, sharedWith: [], links: 0, comments: 0 };
+  },
 };
 const queue = new Proxy({} as Queue, {
   get: (_, k) => {
@@ -382,8 +427,14 @@ const work = async (q: Queue, job: Job) => {
   if (job.id % 5 === 0 && job.attempts === 0) return q.retryLater(job.id, FETCH_FAILED, new Date(Date.now() + 20_000));
   if (job.id % 11 === 0) return q.fail(job.id, 'not moved: the photo is not on the timeline');
   if (job.kind === 'giveback') return giveBack(job, anna[job.id % anna.length]!.id);
-  for (const [i, step] of MOVE_STEPS.entries()) {
-    if (MOVE_STEPS.indexOf(job.step as Step) >= i) continue;
+  const steps = job.albumId ? MOVE_STEPS : MOVE_STEPS.filter((s) => s !== 'albumed');
+  for (const [i, step] of steps.entries()) {
+    if (steps.indexOf(job.step as Step) >= i) continue;
+    if (step === 'albumed') {
+      q.advance(job.id, { step, note: `Album «${job.albumName}»` });
+      await sleep(1_500);
+      continue;
+    }
     if (step === 'thumbnailed') {
       q.wait(job.id);
       await sleep(4_000);
@@ -406,6 +457,11 @@ const worker = {
     const q = world.queue; // a scenario switch mid-job leaves the old queue to finish alone
     void (async () => {
       for (let job = q.claimNext(); job && q === world.queue && !world.paused; job = q.claimNext()) await work(q, job);
+      // As the real worker, once nothing is pending: here every album asked for goes.
+      const c = q.counts();
+      if (c.pending + c.running === 0) {
+        for (const r of q.openCleanups()) q.closeCleanup(r.id, 'deleted', `Anna's album «${r.albumName}» deleted`);
+      }
     })().finally(() => (running = false));
   },
   state: () => ({ running, paused: !!world.paused, pausedReason: world.paused ?? [] }),
