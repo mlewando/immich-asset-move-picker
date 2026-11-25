@@ -36,6 +36,12 @@ _Avoid_: copy, share
 An album owned by the family account, that a move puts the family copies into. Picked or created
 (by name) in the Move dialog. The picker never deletes one.
 
+**Near (a family album)**:
+A member's grid filtered to a family album's days, from its first to its last photo day, plus the
+**surround**: days before and after it. Marked by 2 dividers (where the album's days end and
+start). The **suggested album** is the family album with the latest days whose own days (no
+surround) hold member photos the family lacks.
+
 **Source album**:
 The member's album the grid is filtered by when moving. Deleted at the curator's request once
 nothing in it is on a timeline any more; an **album cleanup** (request) waits for that in the

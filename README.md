@@ -20,6 +20,16 @@ skips it. A stack goes in by its primary photo and a live photo by its still, as
 to album" does. An album deleted in Immich before a move gets to it doesn't stop the move; its
 history says the photo wasn't added. The album last moved into is offered first next time.
 
+**Near family album** filters a member's grid to the days of a family album (its first to last
+photo day) plus a number of days before and after it (0 to 30 each, 2 by default, the last ones
+used are remembered). 2 lines mark where the album's own days end and start; while the grid shows
+the days around it, the line on the album's side stays at the edge of the screen. It combines with
+the other filters; picking an album clears the day fields. While it is on, **Move to family**
+offers that album first. Above a grid not filtered by an album, a note names the family album the member most
+likely still has photos for: the one with the latest days that holds photos of theirs the family
+doesn't have yet. **Show** filters the grid near it, **Skip** names the next one (skipped albums
+are remembered per member in the browser).
+
 When the grid is filtered by an album of the member's, the dialog also offers (checked by
 default) to delete that album once all its photos are moved. Once no job is pending or running,
 the album is deleted if everything in it is archived, hidden (a live photo's video) or in the

@@ -10,6 +10,7 @@ import { media } from './api.js';
 import { dayKey } from './gridnav.js';
 import { CheckCircle, Icon } from './icons.js';
 import { useRovingFocus } from './roving.js';
+import { dividerLabels, dividers } from './near.js';
 import { applyMarquee, groupByDay, rectsIntersect } from './selection.js';
 import { Thumb } from './thumb.js';
 
@@ -204,9 +205,43 @@ function useMarquee(wrapRef, selected, setSelected) {
   return { box, onPointerDown, onClickCapture };
 }
 
-/** empty: what to say when there are no items (title, hint). */
-export function Grid({ items, selected, setSelected, isSelectable, tileSize, onSelect, onDay, onOpen, empty }) {
+/**
+ * A line marking where a family album's own days end or start, among the days around it. Out of
+ * view it stays at the screen's edge on the album's side while the days shown are around it, not
+ * in it: "End" at the bottom (the album is further down), "Start" at the top under the top bar.
+ */
+function Divider({ edge, label }) {
+  const pin = edge === 'end' ? 'bottom-0' : 'top-14';
+  return html`<div
+    role="separator"
+    aria-label=${label}
+    class=${`sticky ${pin} z-10 -mx-2 my-2 flex items-center gap-3 bg-neutral-950/90 px-2 py-1 text-xs font-medium text-sky-200 backdrop-blur-sm sm:-mx-4 sm:px-4`}
+  >
+    <span class="h-px flex-1 bg-sky-400/50" />
+    <span class="flex min-w-0 items-center gap-1.5">
+      <${Icon} name="family" class="size-3.5 shrink-0" />
+      <span class="truncate">${label}</span>
+    </span>
+    <span class="h-px flex-1 bg-sky-400/50" />
+  </div>`;
+}
+
+/**
+ * empty: what to say when there are no items (title, hint). near: { album, before, after } when
+ * the grid shows the days around a family album: its own days are marked by 2 dividers.
+ */
+export function Grid({ items, selected, setSelected, isSelectable, tileSize, onSelect, onDay, onOpen, empty, near }) {
   const groups = useMemo(() => groupByDay(items), [items]);
+  const marks = useMemo(() => {
+    if (!near) return null;
+    const at = dividers(groups.map((g) => g.day), near.album);
+    return { at, label: dividerLabels(near.album.name, near, at) };
+  }, [groups, near?.album, near?.before, near?.after]);
+  // The dividers before day group i (i = groups.length: after the last one).
+  const dividersBefore = (i) => [
+    marks?.at.ends === i && html`<${Divider} key="end" edge="end" label=${marks.label.end} />`,
+    marks?.at.starts === i && html`<${Divider} key="start" edge="start" label=${marks.label.start} />`,
+  ];
   const wrapRef = useRef(null);
   const { box, onPointerDown, onClickCapture } = useMarquee(wrapRef, selected, setSelected);
   // A day has its "select this day" button when something in it can be selected.
@@ -244,11 +279,11 @@ export function Grid({ items, selected, setSelected, isSelectable, tileSize, onS
       onKeyUp=${nav.onKeyUp}
     >
       <p id="photos-keys" class="sr-only">Arrow keys move, Space selects, Enter opens.</p>
-      ${groups.map(({ day, entries }) => {
+      ${groups.flatMap(({ day, entries }, gi) => {
         const dayItems = entries.map((e) => e.item).filter(isSelectable);
         const allIn = dayItems.length > 0 && dayItems.every((i) => selected.has(i.id));
         const count = html`<span class="text-xs font-normal text-neutral-400">${entries.length}<span class="sr-only">${entries.length === 1 ? ' item' : ' items'}</span></span>`;
-        return html`
+        return [...dividersBefore(gi), html`
           <section class="day group/day" key=${day}>
             <h2 class="pb-2 pt-5 text-sm font-medium text-neutral-300">
               ${dayItems.length > 0
@@ -286,8 +321,9 @@ export function Grid({ items, selected, setSelected, isSelectable, tileSize, onS
                 />`,
               )}
             </div>
-          </section>`;
+          </section>`];
       })}
+      ${dividersBefore(groups.length)}
       ${box &&
       html`<div
         class="pointer-events-none fixed z-30 rounded-sm border border-sky-400 bg-sky-400/15"

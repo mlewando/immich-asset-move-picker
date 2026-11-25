@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { albumOptions, chosenIndex, fieldKey } from '../public/albumchoice.js';
+import { albumOptions, chosenIndex, fieldKey, preselectedAlbum } from '../public/albumchoice.js';
 
 const album = (id: string, name: string) => ({ id, name });
 const albums = [album('1', 'Trip 2024'), album('2', 'Żółw w zoo'), album('3', 'Garden'), album('4', 'trip')];
@@ -45,4 +45,11 @@ test('arrows move the choice round; Enter only picks it (the Move button moves),
   assert.equal(fieldKey('Enter', -1, 3), 'none');
   assert.equal(fieldKey('Enter', -1, 0), 'none');
   assert.equal(fieldKey('a', 0, 3), null);
+});
+
+test('preselected album: the one the grid is near, else the last moved into', () => {
+  assert.equal(preselectedAlbum('near', 'last'), 'near');
+  assert.equal(preselectedAlbum(null, 'last'), 'last');
+  assert.equal(preselectedAlbum('', null), null);
+  assert.equal(chosenIndex(albumOptions(albums, ''), '', preselectedAlbum('3', '1')), 2);
 });

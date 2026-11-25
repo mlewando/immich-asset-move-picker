@@ -5,7 +5,7 @@
 import { h } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
-import { albumOptions, chosenIndex, fieldKey } from './albumchoice.js';
+import { albumOptions, chosenIndex, fieldKey, preselectedAlbum } from './albumchoice.js';
 import { dayRange } from './albums.js';
 import { api, media } from './api.js';
 import { Icon } from './icons.js';
@@ -63,10 +63,11 @@ function Option({ option, chosen, id, onPick }) {
 
 /**
  * Mount it to open it. count: the photos to move. source: the member's album the grid is filtered
- * by ({ id, name, ownerName }), else null. onConfirm({ album, deleteAlbumId }): album is { id }, {
- * name } (to create) or null (no album). The page unmounts it after onConfirm or onCancel.
+ * by ({ id, name, ownerName }), else null. nearAlbumId: the family album the grid is near, chosen
+ * at first. onConfirm({ album, deleteAlbumId }): album is { id }, { name } (to create) or null (no
+ * album). The page unmounts it after onConfirm or onCancel.
  */
-export function MoveDialog({ count, source, onConfirm, onCancel }) {
+export function MoveDialog({ count, source, nearAlbumId, onConfirm, onCancel }) {
   const box = useRef(null);
   const list = useRef(null);
   const moveButton = useRef(null);
@@ -76,7 +77,7 @@ export function MoveDialog({ count, source, onConfirm, onCancel }) {
   const [query, setQuery] = useState('');
   const [index, setIndex] = useState(-1);
   const [deleteSource, setDeleteSource] = useState(true);
-  const last = useMemo(lastAlbum, []);
+  const last = useMemo(() => preselectedAlbum(nearAlbumId, lastAlbum()), []);
 
   useEffect(() => {
     box.current?.showModal();

@@ -342,8 +342,60 @@ test('member timeline filter: album + day range passed on; malformed values → 
   }
 });
 
+test('member timeline near a family album: its days ± before/after, narrowed by from/to', async () => {
+  const immich = () => fakeImmich({ members: [{ id: ANNA, name: 'Anna', email: 'a@x', hasPhotos: true }], familyAlbums: [TRIP] });
+  const asked = async (q: string) => {
+    const fake = immich();
+    const res = await call({ immich: fake }, `/api/members/${ANNA}/assets?${q}`);
+    return { status: res.statusCode, calls: fake.calls.filter((c) => c.startsWith('memberTimeline')) };
+  };
+  // TRIP: 2026-07-01 … 2026-07-03.
+  assert.deepEqual((await asked(`near=${TRIP.id}&before=2&after=30`)).calls, [`memberTimeline ${ANNA} {"from":"2026-06-29","to":"2026-08-02"}`]);
+  assert.deepEqual((await asked(`near=${TRIP.id}`)).calls, [`memberTimeline ${ANNA} {"from":"2026-07-01","to":"2026-07-03"}`], 'no surround by default');
+  assert.deepEqual(
+    (await asked(`near=${TRIP.id}&before=2&after=2&from=2026-07-02&album=${GARDEN_ID}`)).calls,
+    [`memberTimeline ${ANNA} {"albumId":"${GARDEN_ID}","from":"2026-07-02","to":"2026-07-05"}`],
+    'every filter applies',
+  );
+  const apart = await asked(`near=${TRIP.id}&to=2026-06-01`);
+  assert.deepEqual([apart.status, apart.calls], [200, []], 'ranges apart: nothing to show, no query');
+  for (const q of [`near=${TRIP.id}&before=31`, `near=${TRIP.id}&after=-1`, 'near=x']) {
+    assert.equal((await asked(q)).status, 400, q);
+  }
+});
+
+test('member timeline near a family album that is gone or empty: 404 no such album', async () => {
+  const EMPTY: FamilyAlbum = { ...TRIP, id: GARDEN_ID, from: null, to: null, coverId: null, count: 0 };
+  const immich = fakeImmich({ members: [{ id: ANNA, name: 'Anna', email: 'a@x', hasPhotos: true }], familyAlbums: [TRIP, EMPTY] });
+  for (const id of [EMPTY.id, '00000000-0000-4000-8000-000000000bad']) {
+    const res = await call({ immich }, `/api/members/${ANNA}/assets?near=${id}`);
+    assert.deepEqual([res.statusCode, res.json()], [404, { error: 'no such album' }], id);
+  }
+});
+
+test('suggestion: the newest family album with photos the family lacks; skip; queued not counted', async () => {
+  const OLD: FamilyAlbum = { ...TRIP, id: GARDEN_ID, name: 'Old', from: '2025-01-01', to: '2025-01-02' };
+  const at = (id: string, day: string, inFamily = false): GridItem => ({ ...item(id), day, inFamily });
+  const A2 = '00000000-0000-4000-8000-00000000a552';
+  const A3 = '00000000-0000-4000-8000-00000000a553';
+  const immich = fakeImmich({
+    members: [{ id: ANNA, name: 'Anna', email: 'a@x', hasPhotos: true }],
+    familyAlbums: [OLD, TRIP],
+    timelines: { [ANNA]: [at(ASSET, '2026-07-02'), at(A2, '2026-07-03', true), at(A3, '2025-01-01')] },
+  });
+  const queue = openQueue(':memory:');
+  const get = async (q = '') => (await call({ immich, queue }, `/api/members/${ANNA}/suggestion${q}`)).json();
+  assert.deepEqual(await get(), { suggestion: { albumId: TRIP.id, count: 1 } }, 'in-family photo not counted');
+  assert.deepEqual(await get(`?skip=${TRIP.id}`), { suggestion: { albumId: OLD.id, count: 1 } });
+  assert.deepEqual(await get(`?skip=${TRIP.id}&skip=${OLD.id}`), { suggestion: null });
+  queue.enqueue('move', [ASSET], { memberId: ANNA });
+  assert.deepEqual(await get(), { suggestion: { albumId: OLD.id, count: 1 } }, 'queued photo not counted');
+  assert.equal((await call({ immich, queue }, `/api/members/${FAMILY_ID}/suggestion`)).statusCode, 404);
+  assert.equal((await call({ immich, queue }, `/api/members/${ANNA}/suggestion?skip=x`)).statusCode, 400);
+});
+
 test('member albums: only for a listed member', async () => {
-  const albums = [{ id: '00000000-0000-4000-8000-0000000a1b01', name: 'Holiday', count: 3, from: '2026-07-01', to: '2026-07-14', ownerName: 'Anna' }];
+  const albums = [{ id: '00000000-0000-4000-8000-0000000a1b01', name: 'Holiday', count: 3, from: '2026-07-01', to: '2026-07-14', coverId: ASSET, ownerName: 'Anna' }];
   const immich = fakeImmich({ members: [{ id: ANNA, name: 'Anna', email: 'a@x', hasPhotos: true }], albums: { [ANNA]: albums } });
   assert.deepEqual((await call({ immich }, `/api/members/${ANNA}/albums`)).json(), albums);
   assert.equal((await call({ immich }, `/api/members/${FAMILY_ID}/albums`)).statusCode, 404);

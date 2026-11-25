@@ -1,11 +1,14 @@
-// The member grid's album filter: a button that opens a searchable list of the albums holding the
-// member's photos, newest first, each with when its photos were taken and how many there are.
+// An album filter of the member grid: a button that opens a searchable list of albums, each with
+// its cover, when its photos were taken and how many there are. Used for the albums holding the
+// member's photos and for the family albums to show the member's photos near.
 import { h } from 'preact';
 import { useMemo, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
 import { fold } from './albumchoice.js';
+import { media } from './api.js';
 import { Icon } from './icons.js';
 import { Popover } from './popover.js';
+import { Thumb } from './thumb.js';
 
 const html = htm.bind(h);
 
@@ -22,25 +25,38 @@ export function dayRange(from, to) {
   return `${fmt(from, { month: 'short', year: 'numeric' })} – ${fmt(to, { month: 'short', year: 'numeric' })}`;
 }
 
+const photos = (n) => `${n} photo${n === 1 ? '' : 's'}`;
+
 /** A filter's button: a chip, tinted while its filter is on. */
 export const chip = (on) =>
   `flex h-9 min-w-0 items-center gap-1.5 rounded-full border px-3 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sky-400 ${
     on ? 'border-sky-400/40 bg-sky-500/15 text-sky-100 hover:bg-sky-500/25' : 'border-white/10 text-neutral-200 hover:bg-white/5'
   }`;
 
-export function AlbumPicker({ albums, value, onChange }) {
+const Cover = ({ id, size }) =>
+  id
+    ? html`<${Thumb} src=${media.thumbnail(id)} class=${`${size} shrink-0 overflow-hidden bg-neutral-800`} loading="lazy" />`
+    : html`<span class=${`${size} grid shrink-0 place-items-center bg-neutral-800 text-neutral-500`} aria-hidden="true"><${Icon} name="album" class="size-3/5" /></span>`;
+
+/**
+ * albums: [{ id, name, count, from, to, coverId }]. name: what the filter is ("Album"); none: the
+ * button's text while it is off ("All albums"); all: the 1st option, turning it off ("All photos").
+ * idPrefix: keeps the option ids apart when there are 2 on the page.
+ */
+export function AlbumSelect({ albums, value, onChange, name, none, all, idPrefix, icon = 'album' }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [hi, setHi] = useState(0); // highlighted option
   const button = useRef(null);
   const current = albums.find((a) => a.id === value);
+  const optionId = (a) => `${idPrefix}-${a.id || 'all'}`;
 
-  // "All photos" first, then the albums matching the search.
+  // The "off" option first, then the albums matching the search.
   const options = useMemo(() => {
     const q = fold(query.trim());
     const found = q ? albums.filter((a) => fold(a.name).includes(q)) : albums;
-    return [...(q ? [] : [{ id: '', name: 'All photos' }]), ...found];
-  }, [albums, query]);
+    return [...(q ? [] : [{ id: '', name: all }]), ...found];
+  }, [albums, query, all]);
 
   const close = () => {
     setOpen(false);
@@ -65,18 +81,18 @@ export function AlbumPicker({ albums, value, onChange }) {
   return html`<div class="relative flex min-w-30 max-sm:w-full">
     <button
       ref=${button}
-      class=${`${chip(!!current)} max-sm:w-full sm:max-w-80`}
+      class=${`${chip(!!current)} max-sm:w-full sm:max-w-96 ${current ? 'pl-1' : ''}`}
       aria-haspopup="dialog"
       aria-expanded=${open}
-      aria-label=${current ? `Album: ${current.name}` : 'Album: all photos'}
+      aria-label=${current ? `${name}: ${current.name}` : `${name}: ${none}`}
       onClick=${() => (open ? close() : (setHi(0), setOpen(true)))}
     >
-      <${Icon} name="album" class="size-4 shrink-0 opacity-70" />
-      <span class="truncate max-sm:flex-1 max-sm:text-left">${current ? current.name : 'All albums'}</span>
-      ${current && html`<span class="shrink-0 text-xs opacity-60">${dayRange(current.from, current.to)}</span>`}
+      ${current ? html`<${Cover} id=${current.coverId} size="size-7 rounded-full" />` : html`<${Icon} name=${icon} class="size-4 shrink-0 opacity-70" />`}
+      <span class="truncate max-sm:flex-1 max-sm:text-left">${current ? current.name : none}</span>
+      ${current && html`<span class="shrink-0 text-xs opacity-60">${dayRange(current.from, current.to)} • ${photos(current.count)}</span>`}
       <${Icon} name="chevronDown" class="size-4 shrink-0 opacity-70" />
     </button>
-    <${Popover} open=${open} onClose=${close} anchor=${button} label="Albums" initialFocus="input" phoneTop="top-28" class="sm:left-0 sm:w-96">
+    <${Popover} open=${open} onClose=${close} anchor=${button} label=${name} initialFocus="input" phoneTop="top-28" class="sm:left-0 sm:w-96">
       <div class="border-b border-white/5 p-2">
         <label class="flex items-center gap-2 rounded-lg bg-white/5 px-2.5 focus-within:ring-2 focus-within:ring-sky-400">
           <${Icon} name="magnify" class="size-4 shrink-0 text-neutral-400" />
@@ -85,29 +101,32 @@ export function AlbumPicker({ albums, value, onChange }) {
             placeholder=${`Search ${albums.length} album${albums.length === 1 ? '' : 's'}`}
             role="combobox"
             aria-expanded="true"
-            aria-controls="album-options"
-            aria-activedescendant=${options[hi] ? `album-${options[hi].id || 'all'}` : undefined}
+            aria-controls=${`${idPrefix}-options`}
+            aria-activedescendant=${options[hi] ? optionId(options[hi]) : undefined}
             value=${query}
             onInput=${(e) => (setQuery(e.currentTarget.value), setHi(0))}
             onKeyDown=${onKey}
           />
         </label>
       </div>
-      <ul id="album-options" role="listbox" aria-label="Albums" class="min-h-0 flex-1 overflow-y-auto py-1 sm:max-h-96">
+      <ul id=${`${idPrefix}-options`} role="listbox" aria-label=${name} class="min-h-0 flex-1 overflow-y-auto py-1 sm:max-h-96">
         ${options.length === 0 && html`<li class="px-4 py-6 text-center text-sm text-neutral-400">No album matches.</li>`}
         ${options.map(
           (a, i) => html`<li
             key=${a.id || 'all'}
-            id=${`album-${a.id || 'all'}`}
+            id=${optionId(a)}
             role="option"
             aria-selected=${a.id === value}
-            class=${`mx-1 flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 ${i === hi ? 'bg-white/10' : ''}`}
+            class=${`mx-1 flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 ${i === hi ? 'bg-white/10' : ''}`}
             onPointerMove=${() => setHi(i)}
             onClick=${() => pick(a.id)}
           >
+            ${a.id
+              ? html`<${Cover} id=${a.coverId} size="size-10 rounded-md" />`
+              : html`<span class="grid size-10 shrink-0 place-items-center text-neutral-400" aria-hidden="true"><${Icon} name=${icon} class="size-5" /></span>`}
             <span class="min-w-0 flex-1">
               <span class="block truncate text-sm">${a.name}</span>
-              ${a.from && html`<span class="block text-xs text-neutral-400">${dayRange(a.from, a.to)} • ${a.count} photo${a.count === 1 ? '' : 's'}</span>`}
+              ${a.from && html`<span class="block text-xs text-neutral-400">${dayRange(a.from, a.to)} • ${photos(a.count)}</span>`}
             </span>
             ${a.id === value && html`<${Icon} name="check" class="size-4 shrink-0 text-sky-400" />`}
           </li>`,

@@ -37,6 +37,12 @@ export function fieldKey(key, index, n) {
 }
 
 /**
+ * The album to choose before anything is typed: the one the grid is near (its photos most likely
+ * belong there), else the one last moved into.
+ */
+export const preselectedAlbum = (nearAlbumId, lastAlbumId) => nearAlbumId || lastAlbumId || null;
+
+/**
  * The option chosen when the list changes: with nothing typed, the album last moved into (if it
  * still exists), else none (-1); with a name typed, the 1st option.
  */

@@ -4,7 +4,10 @@ import { h, render } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import htm from 'htm';
 import { api } from './api.js';
-import { FilterBar } from './filters.js';
+import { FilterBar, nearFilter } from './filters.js';
+import { NO_SUCH_ALBUM, SuggestionNote } from './suggestion.js';
+import { surroundDays, surroundText } from './near.js';
+import { dayRange } from './albums.js';
 import { Grid } from './grid.js';
 import { Icon } from './icons.js';
 import { keepAlive } from './expiry.js';
@@ -20,16 +23,23 @@ import { Viewer } from './viewer.js';
 
 const html = htm.bind(h);
 
-// --- routing: /members/<id>[?album=&from=&to=] | /family, viewer as &asset=<id> | /queue[?job=] -
-// Opening the viewer pushes a history entry, so the browser's Back button closes it.
+// --- routing: /members/<id>[?album=&from=&to=&near=&before=&after=] | /family, viewer as
+// &asset=<id> | /queue[?job=]. Opening the viewer pushes a history entry, so the browser's Back
+// button closes it.
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
+const UUID = /^[0-9a-f-]{36}$/;
 function parseLocation() {
   const q = new URLSearchParams(location.search);
   const asset = q.get('asset');
   const m = /^\/members\/([0-9a-f-]{36})$/.exec(location.pathname);
   if (m) {
     const day = (k) => (DAY.test(q.get(k) ?? '') ? q.get(k) : '');
-    const filter = { album: /^[0-9a-f-]{36}$/.test(q.get('album') ?? '') ? q.get('album') : '', from: day('from'), to: day('to') };
+    const id = (k) => (UUID.test(q.get(k) ?? '') ? q.get(k) : '');
+    const near = id('near');
+    const filter = {
+      album: id('album'), from: day('from'), to: day('to'),
+      near, before: near ? surroundDays(q.get('before')) : 0, after: near ? surroundDays(q.get('after')) : 0,
+    };
     return { kind: 'member', id: m[1], filter, asset };
   }
   if (location.pathname === '/family') return { kind: 'family', asset };
@@ -366,7 +376,11 @@ function useGrid(route) {
       setItems(next);
       const ids = new Set(next.map((i) => i.id));
       setSelected((s) => new Set([...s].filter((id) => ids.has(id))));
-    }, () => {});
+    }, (e) => {
+      // The family album the grid is near went meanwhile: the page drops it (other failures of a
+      // background refresh keep what is shown).
+      if (e.message === NO_SUCH_ALBUM) setError(e.message);
+    });
   }, [gridKey, load]);
 
   // Takes just-queued items out of the grid at once; the server leaves them out from now on.
@@ -462,6 +476,23 @@ function App() {
   }, [memberId]);
   const onFilter = useCallback((filter) => navigate(gridPath({ ...route, filter }), { replace: true }), [gridKey]);
 
+  // The family albums with photos, for the near filter and its dividers. Fetched with the grid
+  // each time, so the album's days the dividers mark are the ones the server filtered by (a move
+  // into the album can widen them).
+  const [familyAlbums, setFamilyAlbums] = useState([]);
+  const loadFamilyAlbums = useCallback(() => {
+    if (memberId) api.familyAlbums().then((list) => setFamilyAlbums(list.filter((a) => a.from)), () => {});
+  }, [memberId]);
+  useEffect(loadFamilyAlbums, [gridKey]);
+  const nearAlbum = (route.filter?.near && familyAlbums.find((a) => a.id === route.filter.near)) || null;
+
+  // The near album is gone (deleted or emptied in Immich): drop it from the filter.
+  useEffect(() => {
+    if (error !== NO_SUCH_ALBUM || !route.filter?.near) return;
+    setToast({ kind: 'warn', text: 'That family album no longer exists' });
+    onFilter(nearFilter(route.filter, ''));
+  }, [error]);
+
   // Jobs finished → refresh the grid in place (moved originals leave a member's timeline, copies
   // join the family one).
   const [movedCount, setMovedCount] = useState(0);
@@ -470,8 +501,9 @@ function App() {
       (_done, moves) => {
         if (moves > 0) setMovedCount((c) => c + moves);
         reload();
+        loadFamilyAlbums();
       },
-      [reload],
+      [reload, loadFamilyAlbums],
     ),
   );
 
@@ -759,7 +791,15 @@ function App() {
           jobs=${html`<${JobsIndicator} summary=${summary} readOnly=${readOnly} checking=${checking} onCheckAgain=${onCheckAgain} onRetry=${onRetry} onOpenJob=${openJob} onOpenQueue=${openQueue} />`}
         />
         ${status?.readOnly && html`<${ReadOnlyBanner} problems=${status.problems} checking=${checking} onCheckAgain=${onCheckAgain} />`}
-        ${route.kind === 'member' && html`<${FilterBar} albums=${albums} filter=${route.filter} onChange=${onFilter} />`}
+        ${route.kind === 'member' &&
+        html`<${FilterBar} albums=${albums} familyAlbums=${familyAlbums} filter=${route.filter} onChange=${onFilter} />
+          ${!route.filter.near && !route.filter.album && items &&
+          html`<${SuggestionNote}
+            memberId=${route.id}
+            familyAlbums=${familyAlbums}
+            items=${items}
+            onShow=${(id) => onFilter(nearFilter(route.filter, id))}
+          />`}`}
         <${StorageTemplateReminder} count=${movedCount} onDismiss=${() => setMovedCount(0)} />
         <main id="main" tabindex="-1" class="px-2 pb-24 outline-none sm:px-4">
           ${route.kind === 'queue' &&
@@ -785,9 +825,17 @@ function App() {
             onSelect=${onSelect}
             onDay=${onDay}
             onOpen=${onOpen}
+            near=${nearAlbum && { album: nearAlbum, before: route.filter.before, after: route.filter.after }}
             empty=${route.kind === 'family'
               ? ['No photos in the family account', 'Photos moved here from a member’s timeline show up here.']
-              : route.filter?.album || route.filter?.from || route.filter?.to
+              : nearAlbum
+                ? [
+                    `No photos from «${nearAlbum.name}» (${dayRange(nearAlbum.from, nearAlbum.to)}, ${surroundText(route.filter)})`,
+                    route.filter.album || route.filter.from || route.filter.to
+                      ? 'Try more days before or after, or fewer other filters.'
+                      : 'Try more days before or after.',
+                  ]
+              : route.filter?.album || route.filter?.from || route.filter?.to || route.filter?.near
                 ? ['No photos match these filters', 'Try another album or other days.']
                 : [`No photos on ${member ? `${member.name}’s` : 'this'} timeline`, 'Only photos on the timeline show up: archived, trashed and locked ones don’t.']}
           />`}
@@ -811,6 +859,7 @@ function App() {
     html`<${MoveDialog}
       count=${moving.ids.length}
       source=${(route.filter?.album && albums.find((a) => a.id === route.filter.album)) || null}
+      nearAlbumId=${route.filter?.near || null}
       onCancel=${() => setMoving(null)}
       onConfirm=${(moveTo) => {
         const { ids, byKeyboard } = moving;

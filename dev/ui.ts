@@ -112,7 +112,7 @@ const byId = new Map(anna.map((p) => [p.id, p]));
 // Newest first, as Immich's query returns them.
 const annaAlbums = [...albumPhotos].map(([id, a]) => {
   const days = [...a.ids].map((i) => byId.get(i)!.day).sort();
-  return { id, name: a.name, count: a.ids.size, from: days[0]!, to: days.at(-1)!, ownerName: 'Anna' };
+  return { id, name: a.name, count: a.ids.size, from: days[0]!, to: days.at(-1)!, coverId: [...a.ids][0]!, ownerName: 'Anna' };
 });
 annaAlbums.sort((a, b) => b.to.localeCompare(a.to));
 const albumsOf = (assetId: string) => [...albumPhotos.values()].filter((a) => a.ids.has(assetId)).map((a) => a.name).sort();
@@ -140,8 +140,10 @@ const family = run('2026-10-20', 3).flatMap((day, d) =>
 );
 // The family's albums to move into (with the `albums` flag of a scenario; empty without). Covers
 // are family photos; 1 album is empty (no cover, no dates), 1 has a name only in letter case
-// different from a member's album. Enough of them that the dialog's list scrolls.
+// different from a member's album. Enough of them that the dialog's list scrolls. "Autumn weekend"
+// lies inside Anna's October days, so the grid near it has days before, in and after it.
 const familyAlbumList: FamilyAlbum[] = [
+  { name: 'Autumn weekend', count: 12, from: '2026-10-04', to: '2026-10-05', cover: 1 },
   { name: 'Wakacje 2026', count: 128, from: '2026-07-01', to: '2026-07-21', cover: 0 },
   { name: 'Garden', count: 42, from: '2026-04-12', to: '2026-10-02', cover: 3 },
   { name: 'Babcia i dziadek', count: 7, from: '2025-12-24', to: '2026-01-02', cover: 6 },

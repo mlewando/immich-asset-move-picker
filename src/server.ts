@@ -9,6 +9,7 @@ import fastifyHelmet from '@fastify/helmet';
 import fastifyStatic from '@fastify/static';
 import Fastify, { LogController, type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { cookieNaming, isSafeMethod, registerAuth, type AuthDeps } from './auth.ts';
+import { albumWindow, intersect, MAX_SURROUND_DAYS, suggestAlbum, type DayRange } from './near.ts';
 import type { GridItem, GuardResult, Immich, MediaKind } from './immich/index.ts';
 import type { Kind, ListedJob, Queue, Section } from './queue.ts';
 import type { Worker } from './worker.ts';
@@ -268,7 +269,15 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
     return busy.size ? items.filter((i) => !busy.has(i.id)) : items;
   };
 
-  app.get<{ Params: { id: string }; Querystring: { album?: string; from?: string; to?: string } }>(
+  const surround = { type: 'integer', minimum: 0, maximum: MAX_SURROUND_DAYS, default: 0 } as const;
+
+  // near: only the days of this family album (see albumWindow), widened by before/after days. It
+  // narrows the other filters further. A family album that is gone or empty → 404 'no such album',
+  // so the page can tell it from an unknown member.
+  app.get<{
+    Params: { id: string };
+    Querystring: { album?: string; from?: string; to?: string; near?: string; before: number; after: number };
+  }>(
     '/api/members/:id/assets',
     {
       schema: {
@@ -276,15 +285,60 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
         querystring: {
           type: 'object',
           additionalProperties: false,
-          properties: { album: uuidParam, from: day, to: day },
+          properties: { album: uuidParam, from: day, to: day, near: uuidParam, before: surround, after: surround },
         },
         response: { 200: { type: 'array', items: gridItemSchema }, 404: errorSchema },
       },
     },
     async (req, reply) => {
       if (!(await isMember(req.params.id))) return reply.code(404).send({ error: 'no such member' });
-      const { album, from, to } = req.query;
-      return withoutQueued(await deps.immich.memberTimeline(req.params.id, { albumId: album, from, to }), 'move');
+      const { album, near, before, after } = req.query;
+      let range: Partial<DayRange> | null = { from: req.query.from, to: req.query.to };
+      if (near) {
+        const nearAlbum = (await deps.immich.familyAlbums()).find((a) => a.id === near);
+        const window = nearAlbum && albumWindow(nearAlbum, before, after);
+        if (!window) return reply.code(404).send({ error: 'no such album' });
+        range = intersect(range, window);
+        if (!range) return [];
+      }
+      const items = await deps.immich.memberTimeline(req.params.id, { albumId: album, from: range.from, to: range.to });
+      return withoutQueued(items, 'move');
+    },
+  );
+
+  // The family album the member's timeline most likely still has photos for (see suggestAlbum).
+  // skip: albums the user passed over.
+  app.get<{ Params: { id: string }; Querystring: { skip?: string[] } }>(
+    '/api/members/:id/suggestion',
+    {
+      schema: {
+        params: memberParams,
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { skip: { type: 'array', maxItems: 1000, items: uuidParam } },
+        },
+        response: {
+          200: {
+            type: 'object',
+            required: ['suggestion'],
+            properties: {
+              suggestion: {
+                type: ['object', 'null'],
+                required: ['albumId', 'count'],
+                properties: { albumId: { type: 'string' }, count: { type: 'integer' } },
+              },
+            },
+          },
+          404: errorSchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      if (!(await isMember(req.params.id))) return reply.code(404).send({ error: 'no such member' });
+      const [albums, items] = await Promise.all([deps.immich.familyAlbums(), deps.immich.memberTimeline(req.params.id)]);
+      const found = suggestAlbum(albums, withoutQueued(items, 'move'), new Set(req.query.skip));
+      return { suggestion: found && { albumId: found.album.id, count: found.count } };
     },
   );
 
@@ -305,6 +359,7 @@ export async function buildApp(deps: ServerDeps, opts: AppOptions = {}): Promise
                 count: { type: 'integer' },
                 from: { type: 'string' },
                 to: { type: 'string' },
+                coverId: { type: 'string' },
                 ownerName: nullable('string'),
               },
             },

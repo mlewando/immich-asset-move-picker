@@ -46,7 +46,8 @@ type Row = {
 
 // from/to: the first and last day (YYYY-MM-DD, localDateTime) of the member's photos in it.
 // ownerName: whose album it is (it may be another user's that holds the member's photos).
-export type Album = { id: string; name: string; count: number; from: string; to: string; ownerName: string | null };
+// coverId: Immich's album thumbnail, else the member's newest photo in it.
+export type Album = { id: string; name: string; count: number; from: string; to: string; coverId: string; ownerName: string | null };
 
 /** Member timeline filter: 1 album, and/or a day range (YYYY-MM-DD, inclusive, localDateTime). */
 export type TimelineFilter = { albumId?: string; from?: string; to?: string };
@@ -141,6 +142,7 @@ export function memberAlbums(db: Db, memberId: string): Promise<Album[]> {
   return db.query<Album>(
     `SELECT al.id, al."albumName" AS name, count(DISTINCT a.id)::int AS count,
             ${day('min')} AS "from", ${day('max')} AS "to",
+            COALESCE(al."albumThumbnailAssetId", (array_agg(a.id ORDER BY a."localDateTime" DESC))[1]) AS "coverId",
             (SELECT u.name FROM album_user ou JOIN "user" u ON u.id = ou."userId"
               WHERE ou."albumId" = al.id AND ou.role = 'owner' LIMIT 1) AS "ownerName"
        FROM album al

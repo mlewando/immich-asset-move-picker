@@ -45,12 +45,18 @@ const get = (url, opts) => request('GET', url, undefined, opts);
 export const api = {
   status: (opts) => get('/api/status', opts),
   members: () => get('/api/members'),
-  // filter: { album, from, to } (each optional; from/to YYYY-MM-DD)
+  // filter: { album, from, to, near, before, after } (each optional; from/to YYYY-MM-DD; near: a
+  // family album, before/after: days around it). A gone near album → Error 'no such album'.
   memberAssets: (id, filter = {}, opts) => {
     const q = new URLSearchParams(Object.entries(filter).filter(([, v]) => v)).toString();
     return get(`/api/members/${id}/assets${q ? `?${q}` : ''}`, opts);
   },
   memberAlbums: (id) => get(`/api/members/${id}/albums`),
+  // → { suggestion: { albumId, count } | null }; skip: family album ids passed over.
+  suggestion: (id, skip, opts) => {
+    const q = new URLSearchParams(skip.map((albumId) => ['skip', albumId])).toString();
+    return get(`/api/members/${id}/suggestion${q ? `?${q}` : ''}`, opts);
+  },
   familyAssets: (opts) => get('/api/family/assets', opts),
   jobs: (opts) => get('/api/jobs', opts),
   // 1 page of a queue section ('active' | 'failed' | 'done') → { jobs, next }; after: the previous page's next.
