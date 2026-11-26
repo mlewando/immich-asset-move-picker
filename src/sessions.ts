@@ -33,6 +33,20 @@ const MIGRATIONS = [
      refreshed_at   INTEGER NOT NULL
    );
    CREATE TABLE secret (name TEXT PRIMARY KEY, value TEXT NOT NULL);`,
+  // A login under the local session mode keeps no refresh token. SQLite can't drop NOT NULL from a
+  // column: copy the rows into a new table, drop the old one and give the new one its name.
+  `CREATE TABLE oidc_credentials_new (
+     session_key    TEXT    PRIMARY KEY REFERENCES http_session (key) ON DELETE CASCADE,
+     sub            TEXT    NOT NULL,
+     email          TEXT    NOT NULL,
+     name           TEXT,
+     groups         TEXT    NOT NULL, -- JSON array
+     refresh_token  TEXT,             -- null: a login under the local session mode
+     refreshed_at   INTEGER NOT NULL
+   );
+   INSERT INTO oidc_credentials_new SELECT session_key, sub, email, name, groups, refresh_token, refreshed_at FROM oidc_credentials;
+   DROP TABLE oidc_credentials;
+   ALTER TABLE oidc_credentials_new RENAME TO oidc_credentials;`,
 ];
 
 /** Opens (creating if needed) the session file at `path`; ':memory:' for tests. */

@@ -9,7 +9,6 @@ import * as client from 'openid-client';
 import {
   createOidc,
   isLoopback,
-  MAX_SESSION_MS,
   NoEmail,
   ProviderRefused,
   RefreshUnfinished,
@@ -37,7 +36,9 @@ const baseConfig = (over: Partial<AuthConfig> = {}): AuthConfig => ({
   clientSecret: 'client-secret',
   publicUrl: new URL(HOME),
   allowedGroups: ['photos-curators'],
+  sessionMode: 'oidc-refresh',
   idleMs: 30 * MIN,
+  maxMs: 12 * 60 * MIN,
   logoutUrl: null,
   ...over,
 });
@@ -400,16 +401,77 @@ test('session: slides while the user is active, ends after the idle time', async
   await app.close();
 });
 
-test('session: ends at the maximum age however active the user is', async () => {
-  const { app, advance, status, login } = await makeApp(fakeOidc().oidc);
-  const { session } = await login();
-  for (let t = 10 * MIN; t <= MAX_SESSION_MS; t += 10 * MIN) {
+for (const sessionMode of ['oidc-refresh', 'local'] as const) {
+  test(`session (${sessionMode}): ends at the configured maximum age however active the user is`, async () => {
+    const maxMs = 2 * 60 * MIN;
+    const { app, advance, status, login } = await makeApp(fakeOidc().oidc, baseConfig({ sessionMode, maxMs }));
+    const { session } = await login();
+    for (let t = 10 * MIN; t <= maxMs; t += 10 * MIN) {
+      advance(10 * MIN);
+      assert.equal(await status(session), 200);
+    }
     advance(10 * MIN);
+    assert.equal(await status(session), 401);
+    await app.close();
+  });
+}
+
+test('local mode: login without a refresh token, then no provider calls at all', async () => {
+  const f = fakeOidc({ codeGrant: async () => ({ ...ANNA, refreshToken: null }) });
+  const sessions = openSessions(':memory:');
+  const { app, advance, status, login } = await makeApp(f.oidc, baseConfig({ sessionMode: 'local' }), sessions);
+  const { cb, session } = await login();
+  assert.equal(cb.statusCode, 302);
+  for (let i = 0; i < 6; i++) {
+    advance(REFRESH_MS + 1);
     assert.equal(await status(session), 200);
   }
-  advance(10 * MIN);
+  assert.equal(f.refreshes(), 0);
+  // Idle past PICKER_SESSION_IDLE: out, as in the other mode.
+  advance(31 * MIN);
   assert.equal(await status(session), 401);
   await app.close();
+});
+
+test('local mode: a refresh token the provider sends anyway is not kept', async () => {
+  const f = fakeOidc(); // its login grant carries a refresh token
+  const sessions = openSessions(':memory:');
+  const local = await makeApp(f.oidc, baseConfig({ sessionMode: 'local' }), sessions);
+  const { session } = await local.login();
+  await local.app.close();
+  // Back in the oidc-refresh mode, a session without a token ends: so none was stored.
+  const strict = await makeApp(f.oidc, baseConfig(), sessions);
+  assert.equal(await strict.status(session), 401);
+  assert.equal(f.refreshes(), 0);
+  await strict.app.close();
+});
+
+test('local mode: a session from an oidc-refresh login keeps working, never refreshed nor revoked', async () => {
+  const f = fakeOidc();
+  const sessions = openSessions(':memory:');
+  const before = await makeApp(f.oidc, baseConfig(), sessions);
+  const { session } = await before.login();
+  await before.app.close();
+  const after = await makeApp(f.oidc, baseConfig({ sessionMode: 'local' }), sessions);
+  after.advance(2 * REFRESH_MS);
+  assert.equal(await after.status(session), 200);
+  assert.equal(f.refreshes(), 0);
+  const out = await after.app.inject(await withCsrf(after.app, { method: 'POST', url: '/oauth2/sign_out', cookies: { picker_session: session } }));
+  assert.equal(out.statusCode, 200);
+  assert.deepEqual(f.revoked, []);
+  await after.app.close();
+});
+
+test('oidc-refresh mode: a session from a local login ends on its next request, without a provider call', async () => {
+  const f = fakeOidc({ codeGrant: async () => ({ ...ANNA, refreshToken: null }) });
+  const sessions = openSessions(':memory:');
+  const before = await makeApp(f.oidc, baseConfig({ sessionMode: 'local' }), sessions);
+  const { session } = await before.login();
+  await before.app.close();
+  const after = await makeApp(f.oidc, baseConfig(), sessions);
+  assert.equal(await after.status(session), 401);
+  assert.equal(f.refreshes(), 0);
+  await after.app.close();
 });
 
 test('session: 300 parallel requests after the refresh time share 1 refresh', async () => {
@@ -584,6 +646,20 @@ test('real OIDC flow: login, then a refresh re-reads the groups', async () => {
   groups = [];
   advance(REFRESH_MS + 1);
   assert.equal(await status(session), 401, 'removed from the group');
+  await app.close();
+});
+
+test('real OIDC flow, local mode: no offline_access asked, login works', async () => {
+  groups = ['photos-curators'];
+  const config = baseConfig({ issuer: new URL(provider.issuer.url!), sessionMode: 'local' });
+  const { app } = await makeApp(createOidc(config), config);
+  const start = await app.inject('/oauth2/start?rd=/family');
+  const authorize = new URL(start.headers.location as string);
+  assert.equal(authorize.searchParams.get('scope'), 'openid profile email groups');
+  const back = new URL((await fetch(authorize, { redirect: 'manual' })).headers.get('location')!);
+  const c = loginCookieOf(start);
+  const cb = await app.inject({ url: back.pathname + back.search, cookies: { [c.name]: c.value } });
+  assert.equal(cb.statusCode, 302, cb.body);
   await app.close();
 });
 

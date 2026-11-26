@@ -68,3 +68,19 @@ identity_providers:
         scopes: ['openid', 'profile', 'email', 'groups', 'offline_access']
         grant_types: ['authorization_code', 'refresh_token']
         response_types: ['code']
+      # The same picker with PICKER_SESSION_MODE=local: no offline_access, no refresh_token grant.
+      - client_id: 'picker-local'
+        client_name: 'Photo picker (dev, local sessions)'
+        client_secret: {{ secret "/data/secrets/picker_client_secret_digest" | msquote }}
+        public: false
+        authorization_policy: 'photos-curators'
+        require_pkce: true
+        pkce_challenge_method: 'S256'
+        consent_mode: 'pre-configured'
+        pre_configured_consent_duration: '3 months'
+        token_endpoint_auth_method: 'client_secret_basic'
+        redirect_uris:
+          - 'http://127.0.0.1:2284/oauth2/callback'
+        scopes: ['openid', 'profile', 'email', 'groups']
+        grant_types: ['authorization_code']
+        response_types: ['code']

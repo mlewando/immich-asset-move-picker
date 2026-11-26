@@ -79,16 +79,25 @@ and of Done are 1 Tab stop each the same way; Enter or Space opens the job.
   itself, no auth proxy needed. Register a confidential client with:
   - redirect URI `<PICKER_PUBLIC_URL>/oauth2/callback`;
   - scopes `openid profile email groups offline_access`, with `email` and `groups` available
-    from UserInfo;
+    from UserInfo (`offline_access` not needed with `PICKER_SESSION_MODE=local`);
   - grant types `authorization_code` and `refresh_token`, PKCE `S256`, and
-    `client_secret_basic`.
+    `client_secret_basic` (`authorization_code` alone with `PICKER_SESSION_MODE=local`).
 
-  Only members of `PICKER_OIDC_ALLOWED_GROUPS` get in, and only with a refresh token. A session
-  lasts as long as the user is active: it ends after `PICKER_SESSION_IDLE` without a request, and
-  at the latest 12 hours after the login. Every 5 minutes a refresh re-reads the user from the
-  provider, so someone disabled or removed from the groups is out within 5 minutes; if the
-  provider stays unreachable for 30 minutes past that, the session ends too. Sign out (in the
-  sidebar) ends the session and revokes its refresh token; the provider's own session ends only if
+  Only members of `PICKER_OIDC_ALLOWED_GROUPS` get in. A session lasts as long as the user is
+  active: it ends after `PICKER_SESSION_IDLE` without a request, and at the latest
+  `PICKER_SESSION_MAX` (default 12 hours) after the login. What happens in between depends on
+  `PICKER_SESSION_MODE`:
+  - `oidc-refresh` (default): a login needs a refresh token. Every 5 minutes a refresh re-reads
+    the user from the provider, so someone disabled or removed from the groups is out within 5
+    minutes; if the provider stays unreachable for 30 minutes past that, the session ends too.
+    Sign out revokes the refresh token. A session logged in under `local` ends on its next
+    request.
+  - `local`: the provider is asked only at the login. Someone disabled or removed from the groups
+    keeps a session they already have until it goes idle or reaches `PICKER_SESSION_MAX`.
+
+  To log everyone out at once (e.g. after removing someone), stop the picker, delete
+  `PICKER_DATA_DIR/sessions.db` and start it again. Sign out (in the
+  sidebar) ends the session; the provider's own session ends only if
   `PICKER_OIDC_LOGOUT_URL` sends the browser to its logout page, else the next visit logs
   straight back in. A login refused because the account may not use the picker says so and
   offers another account through the same logout page; without `PICKER_OIDC_LOGOUT_URL` it can
@@ -125,6 +134,8 @@ because it names internal errors.
 | `PICKER_OIDC_CLIENT_ID` `PICKER_OIDC_CLIENT_SECRET` | the picker's client at the provider |
 | `PICKER_OIDC_ALLOWED_GROUPS` | comma-separated; a user must be in at least 1 |
 | `PICKER_SESSION_IDLE` | idle time that ends a session, default `30m` (`s`/`m`/`h`); a change applies to logins after it |
+| `PICKER_SESSION_MAX` | maximum session age however active the user is, default `12h`; at least `PICKER_SESSION_IDLE`; a change applies to live sessions at once |
+| `PICKER_SESSION_MODE` | `oidc-refresh` (default): re-check the user at the provider every 5 minutes with a refresh token; `local`: ask the provider only at the login (see the provider requirements above) |
 | `PICKER_OIDC_LOGOUT_URL` | optional, https: where Sign out sends the browser next, the provider's logout page (Authelia: `https://auth.example.org/logout?rd=<encoded PICKER_PUBLIC_URL/signed-out>`); default the picker's own signed-out page |
 | `PICKER_HEALTHZ_USER` `PICKER_HEALTHZ_PASSWORD` | basic auth for `/healthz`; required unless `PICKER_AUTH=off` |
 | `PICKER_TLS_CERT` `PICKER_TLS_KEY` | PEM files: serve HTTPS (read on start; restart after renewal). Required when `PICKER_PUBLIC_URL` is https: the session cookie is then Secure and is set only on HTTPS requests |
@@ -168,7 +179,9 @@ npm run dev:auth      # Authelia on https://auth.localhost:9091 (users curator, 
 npm run dev:app:auth  # the app on http://127.0.0.1:2284, login on
 ```
 The browser warns once about Authelia's certificate (a local CA in `dev/.data/authelia/tls`).
-`curator` gets in; `outsider` is not in `photos-curators`, so Authelia refuses it.
+`curator` gets in; `outsider` is not in `photos-curators`, so Authelia refuses it. For the
+`local` session mode, use the client that grants no refresh token:
+`PICKER_OIDC_CLIENT_ID=picker-local PICKER_SESSION_MODE=local npm run dev:app:auth`.
 Node runs the TypeScript sources directly; the only build step is the page's CSS (Tailwind).
 
 CI type-checks, runs the unit tests and builds the image on every push and pull request. To

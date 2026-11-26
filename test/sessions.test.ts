@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { after, test } from 'node:test';
 import type { Session } from 'fastify';
 import { sessionKey } from '../src/session-store.ts';
@@ -73,6 +74,34 @@ test('the file keeps a hash of the session id, and the same cookie secret after 
   assert.equal(again.cookieSecret, secret);
   assert.ok(await call((cb) => again.store.get('the-cookie-id', cb)));
   again.close();
+});
+
+test('migration 2: a file from before keeps its sessions and tokens, and takes a login without a token', async () => {
+  const path = join(dir, 'v1.db');
+  // The schema as migration 1 left it, with 1 logged-in session.
+  const v1 = new DatabaseSync(path);
+  v1.exec(`CREATE TABLE http_session (key TEXT PRIMARY KEY, generation TEXT NOT NULL, data TEXT NOT NULL, expires_at INTEGER NOT NULL);
+    CREATE INDEX http_session_expires ON http_session (expires_at);
+    CREATE TABLE oidc_credentials (
+      session_key TEXT PRIMARY KEY REFERENCES http_session (key) ON DELETE CASCADE,
+      sub TEXT NOT NULL, email TEXT NOT NULL, name TEXT, groups TEXT NOT NULL,
+      refresh_token TEXT NOT NULL, refreshed_at INTEGER NOT NULL);
+    CREATE TABLE secret (name TEXT PRIMARY KEY, value TEXT NOT NULL);
+    PRAGMA user_version = 1;`);
+  const old = sessionKey('id-old');
+  v1.prepare(`INSERT INTO http_session VALUES (?, 'g1', ?, ?)`).run(old, JSON.stringify(session('g1', { sub: 'anna' })), Date.now() + HOUR);
+  v1.prepare(`INSERT INTO oidc_credentials VALUES (?, 'anna', 'anna@example.org', 'Anna', '["photos-curators"]', 'rt-old', 5)`).run(old);
+  v1.close();
+
+  const { store, credentials, close } = openSessions(path);
+  assert.equal(credentials.get(old)?.refreshToken, 'rt-old');
+  await call((cb) => store.set('id-new', session('g1', { sub: 'anna' }), cb));
+  credentials.save(sessionKey('id-new'), ANNA, null, 6);
+  assert.equal(credentials.get(sessionKey('id-new'))?.refreshToken, null);
+  // The foreign key survived the rebuild: the row still goes with its session.
+  await call((cb) => store.destroy('id-old', cb));
+  assert.equal(credentials.get(old), null);
+  close();
 });
 
 test('a refresh that finishes after a newer login does not overwrite it', async () => {

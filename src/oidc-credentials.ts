@@ -4,6 +4,8 @@
 // requests writing back copies loaded before a refresh would put a spent refresh token back. Here
 // the token is only ever written by a refresh, column by column.
 //
+// A session logged in under the local session mode has no refresh token (null).
+//
 // The refresh tokens are plain: with the client secret they'd extend a session, so the file stays
 // in the 0700 data dir. A row goes when its session goes (foreign key, ON DELETE CASCADE).
 import type { DatabaseSync } from 'node:sqlite';
@@ -13,13 +15,13 @@ export type Identity = { sub: string; email: string; name: string | null; groups
 
 export type Credentials = Identity & {
   key: string; // the session's key (sessionKey in session-store.ts)
-  refreshToken: string;
+  refreshToken: string | null; // null: a login under the local session mode
   refreshedAt: number; // ms since epoch: the last refresh that went through (or the login)
 };
 
 export type CredentialStore = {
   /** After a login: the session's identity and refresh token (replacing any earlier ones). */
-  save(key: string, who: Identity, refreshToken: string, now: number): void;
+  save(key: string, who: Identity, refreshToken: string | null, now: number): void;
   get(key: string): Credentials | null;
   /**
    * After a refresh with `spent`: the identity as the provider now sees it, the rotated token (if
@@ -38,7 +40,7 @@ export function credentialStore(db: DatabaseSync): CredentialStore {
     email: r.email as string,
     name: (r.name as string | null) ?? null,
     groups: JSON.parse(r.groups as string) as string[],
-    refreshToken: r.refresh_token as string,
+    refreshToken: (r.refresh_token as string | null) ?? null,
     refreshedAt: Number(r.refreshed_at),
   });
 

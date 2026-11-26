@@ -1,7 +1,7 @@
 // Environment variables → validated config (listed in the README). Error messages name the
 // variable, never its value: some are secrets.
 import { isAbsolute } from 'node:path';
-import { type AuthConfig, isLoopback } from './auth.ts';
+import { type AuthConfig, isLoopback, isSessionMode } from './auth.ts';
 
 export type Config = {
   listen: { host: string; port: number };
@@ -137,12 +137,19 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     const clientSecret = required('PICKER_OIDC_CLIENT_SECRET');
     const allowedGroups = list('PICKER_OIDC_ALLOWED_GROUPS', 'group');
     const idleMs = duration('PICKER_SESSION_IDLE', '30m');
+    const maxMs = duration('PICKER_SESSION_MAX', '12h');
+    // A maximum below the idle time is nearly always a typo (12m meant as 12h).
+    if (idleMs && maxMs && maxMs < idleMs) problems.push('PICKER_SESSION_MAX must be at least PICKER_SESSION_IDLE');
+    const sessionMode = env.PICKER_SESSION_MODE?.trim() || 'oidc-refresh';
+    if (!isSessionMode(sessionMode)) problems.push('PICKER_SESSION_MODE must be oidc-refresh or local');
     const logoutRaw = env.PICKER_OIDC_LOGOUT_URL?.trim();
     const logoutUrl = logoutRaw ? URL.parse(logoutRaw) : null;
     if (logoutRaw && logoutUrl?.protocol !== 'https:' && !(logoutUrl && isLoopback(logoutUrl.hostname))) {
       problems.push('PICKER_OIDC_LOGOUT_URL must be an https URL');
     }
-    if (issuer && publicUrl) auth = { issuer, publicUrl, clientId, clientSecret, allowedGroups, idleMs, logoutUrl };
+    if (issuer && publicUrl && isSessionMode(sessionMode)) {
+      auth = { issuer, publicUrl, clientId, clientSecret, allowedGroups, sessionMode, idleMs, maxMs, logoutUrl };
+    }
   }
 
   // /healthz has no login session (probes call it), so it gets its own basic-auth credentials.

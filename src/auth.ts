@@ -3,10 +3,12 @@
 // (@fastify/session, stored by session-store.ts; the provider's tokens apart, in
 // oidc-credentials.ts) keeps the user in while they work:
 // - it ends after PICKER_SESSION_IDLE without a request (the page pings while the user is active),
-//   and in any case MAX_SESSION_MS after the login;
-// - every REFRESH_MS a refresh-token grant re-reads the user from the provider, so a disabled
-//   user or one removed from the allowed groups is out within that time. A provider that can't be
-//   reached is retried for REFRESH_GRACE_MS, then the session ends too.
+//   and in any case PICKER_SESSION_MAX after the login;
+// - in the oidc-refresh session mode, every REFRESH_MS a refresh-token grant re-reads the user
+//   from the provider, so a disabled user or one removed from the allowed groups is out within
+//   that time. A provider that can't be reached is retried for REFRESH_GRACE_MS, then the session
+//   ends too. In the local mode the provider is asked only at the login (no offline_access, no
+//   refresh token): the user is trusted until the session ends.
 // Background requests (/api/, /media/, and anything a browser marks as not a document) without a
 // session get 401, never a login redirect: a grid of hundreds of tiles must not start hundreds of
 // logins. The page reloads once and that 1 navigation logs in (public/expiry.js).
@@ -19,6 +21,10 @@ import type { Credentials, CredentialStore, Identity } from './oidc-credentials.
 import { sessionKey } from './session-store.ts';
 import type { Sessions } from './sessions.ts';
 
+const SESSION_MODES =['oidc-refresh', 'local'] as const;
+export type SessionMode = (typeof SESSION_MODES)[number];
+export const isSessionMode = (s: string): s is SessionMode => (SESSION_MODES as readonly string[]).includes(s);
+
 export type AuthConfig = {
   issuer: URL;
   clientId: string;
@@ -26,7 +32,10 @@ export type AuthConfig = {
   // Where browsers reach the picker; the redirect URI is <publicUrl>/oauth2/callback.
   publicUrl: URL;
   allowedGroups: string[];
+  sessionMode: SessionMode;
   idleMs: number;
+  // However active the user is, they log in again after this (the provider re-checks everything).
+  maxMs: number;
   // Where the browser goes after signing out of the picker: the provider's logout page, so its own
   // session ends too (else the next visit logs straight back in). null: the picker's own page.
   logoutUrl: URL | null;
@@ -65,14 +74,13 @@ export const REFRESH_MS = 5 * 60_000;
 // REFRESH_GRACE_MS past the due refresh; after that a session can't be vouched for any more.
 const RETRY_MS = 60_000;
 export const REFRESH_GRACE_MS = 30 * 60_000;
-// However active the user is, they log in again after this (the provider re-checks everything).
-export const MAX_SESSION_MS = 12 * 3_600_000;
 // lastSeen is written at most this often (a grid fires hundreds of requests a second).
 const TOUCH_MS = 15_000;
 const LOGIN_TTL_MS = 10 * 60_000;
 // Logins in progress kept per browser (a few tabs at once).
 const MAX_PENDING_LOGINS = 5;
-const SCOPE = 'openid profile email groups offline_access';
+// offline_access asks for the refresh token; the local mode has no use for one.
+const scope = (mode: SessionMode) => (mode === 'oidc-refresh' ? 'openid profile email groups offline_access' : 'openid profile email groups');
 
 /** openid-client against the real provider. Discovery runs on first use and again after a failure. */
 export function createOidc(cfg: AuthConfig): Oidc {
@@ -103,7 +111,7 @@ export function createOidc(cfg: AuthConfig): Oidc {
     async authorizationUrl(redirectUri, { state, nonce, codeChallenge }) {
       return client.buildAuthorizationUrl(await config(), {
         redirect_uri: redirectUri,
-        scope: SCOPE,
+        scope: scope(cfg.sessionMode),
         state,
         nonce,
         code_challenge: codeChallenge,
@@ -183,6 +191,9 @@ const refused = (err: unknown) =>
 
 const PRUNE_MS = 60 * 60_000;
 
+type Refreshable = Credentials & { refreshToken: string };
+const isRefreshable = (c: Credentials): c is Refreshable => c.refreshToken !== null;
+
 /**
  * The OIDC side of the sessions: when a session's credentials are refreshed at the provider, and
  * when the provider's answer ends the session.
@@ -203,7 +214,7 @@ function credentialKeeper({ config, oidc, credentials, log }: { config: AuthConf
     return null;
   };
 
-  const attemptRefresh = async (c: Credentials): Promise<Credentials | null> => {
+  const attemptRefresh = async (c: Refreshable): Promise<Credentials | null> => {
     try {
       const { who, refreshToken } = await oidc.refresh(c.refreshToken, c.sub);
       retryAt.delete(c.key);
@@ -221,7 +232,7 @@ function credentialKeeper({ config, oidc, credentials, log }: { config: AuthConf
       return kept;
     }
   };
-  const refresh = (c: Credentials): Promise<Credentials | null> => {
+  const refresh = (c: Refreshable): Promise<Credentials | null> => {
     let p = inFlight.get(c.key);
     if (!p) {
       p = attemptRefresh(c).finally(() => inFlight.delete(c.key));
@@ -236,6 +247,10 @@ function credentialKeeper({ config, oidc, credentials, log }: { config: AuthConf
     async current(key: string): Promise<Credentials | null> {
       const c = credentials.get(key);
       if (!c) return null;
+      // The local mode never asks the provider again, whether the session holds a token or not.
+      if (config.sessionMode === 'local') return c;
+      // A login under the local mode: nothing to re-check the user with.
+      if (!isRefreshable(c)) return end(c, 'no refresh token (logged in under the local session mode)');
       const t = Date.now();
       return t - c.refreshedAt >= REFRESH_MS && (retryAt.get(key) ?? 0) <= t ? refresh(c) : c;
     },
@@ -295,9 +310,12 @@ export async function registerAuth(app: FastifyInstance, deps: AuthDeps): Promis
     }
   };
 
-  // Best effort, not awaited: the session is gone here either way.
-  const revokeQuietly = (refreshToken: string, req: FastifyRequest) =>
+  // Best effort, not awaited: the session is gone here either way. The local mode never calls the
+  // provider after the login, so it leaves even a token from an earlier oidc-refresh login alone.
+  const revokeQuietly = (refreshToken: string | null, req: FastifyRequest) => {
+    if (config.sessionMode !== 'oidc-refresh' || !refreshToken) return;
     void oidc.revoke(refreshToken).catch((err: Error) => req.log.warn({ err: err.message }, 'token revocation failed'));
+  };
 
   const endSession = async (req: FastifyRequest, reply: FastifyReply) => {
     const key = sessionKey(req.session.sessionStoreId);
@@ -311,7 +329,7 @@ export async function registerAuth(app: FastifyInstance, deps: AuthDeps): Promis
     const s = req.session;
     if (!s?.sub) return null; // never logged in, or idle past PICKER_SESSION_IDLE (the store dropped it)
     const t = Date.now();
-    if (t - (s.createdAt ?? 0) > MAX_SESSION_MS) {
+    if (t - (s.createdAt ?? 0) > config.maxMs) {
       req.log.info({ sub: s.sub }, 'session ended: maximum age');
       await endSession(req, reply);
       return null;
@@ -397,9 +415,10 @@ export async function registerAuth(app: FastifyInstance, deps: AuthDeps): Promis
       req.log.info({ user: grant.who.email }, 'login refused: not in an allowed group');
       return sendNotice(reply, notices.refused(grant.who.email, config.logoutUrl));
     }
-    // Without a refresh token the session could never re-check the user: refuse rather than
-    // trust them until they go idle.
-    if (!grant.refreshToken) {
+    // In the oidc-refresh mode a session without a refresh token could never re-check the user:
+    // refuse rather than trust them until they go idle. The local mode keeps no token at all.
+    const refreshToken = config.sessionMode === 'oidc-refresh' ? grant.refreshToken : null;
+    if (config.sessionMode === 'oidc-refresh' && !refreshToken) {
       req.log.error('login refused: the provider sent no refresh token (is offline_access granted?)');
       return sendNotice(reply, notices.failed(502));
     }
@@ -419,7 +438,7 @@ export async function registerAuth(app: FastifyInstance, deps: AuthDeps): Promis
     req.session.createdAt = t;
     req.session.lastSeen = t;
     await req.session.save();
-    sessions.credentials.save(sessionKey(req.session.sessionStoreId), grant.who, grant.refreshToken, t);
+    sessions.credentials.save(sessionKey(req.session.sessionStoreId), grant.who, refreshToken, t);
     req.log.info({ user: grant.who.email }, 'logged in');
     return reply.redirect(login.returnTo);
   });

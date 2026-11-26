@@ -88,6 +88,22 @@ test('PICKER_OIDC_LOGOUT_URL is optional and https', () => {
   assert.deepEqual(problemsOf({ ...valid, PICKER_OIDC_LOGOUT_URL: 'nope' }), ['PICKER_OIDC_LOGOUT_URL must be an https URL']);
 });
 
+test('session mode and maximum age', () => {
+  const c = loadConfig(valid);
+  assert.equal(c.auth?.sessionMode, 'oidc-refresh');
+  assert.equal(c.auth?.maxMs, 12 * 3_600_000);
+  const local = loadConfig({ ...valid, PICKER_SESSION_MODE: 'local', PICKER_SESSION_MAX: '8h' }).auth;
+  assert.equal(local?.sessionMode, 'local');
+  assert.equal(local?.maxMs, 8 * 3_600_000);
+  assert.deepEqual(problemsOf({ ...valid, PICKER_SESSION_MODE: 'refresh' }), ['PICKER_SESSION_MODE must be oidc-refresh or local']);
+  assert.deepEqual(problemsOf({ ...valid, PICKER_SESSION_MAX: '12m' }), ['PICKER_SESSION_MAX must be at least PICKER_SESSION_IDLE']);
+  assert.equal(loadConfig({ ...valid, PICKER_SESSION_MAX: '30m' }).auth?.maxMs, 30 * 60_000, 'equal to the idle time is fine');
+  assert.deepEqual(problemsOf({ ...valid, PICKER_SESSION_MAX: '0h' }), ['PICKER_SESSION_MAX must be a duration like 30m']);
+  // Without the login the session settings are not read at all.
+  const { PICKER_HEALTHZ_USER, PICKER_HEALTHZ_PASSWORD, ...dev } = valid;
+  assert.equal(loadConfig({ ...dev, PICKER_AUTH: 'off', PICKER_SESSION_MODE: 'nope', PICKER_SESSION_MAX: 'x' }).auth, null);
+});
+
 test('session idle time and TLS files', () => {
   assert.equal(loadConfig({ ...valid, PICKER_SESSION_IDLE: '2h' }).auth?.idleMs, 2 * 3_600_000);
   assert.deepEqual(problemsOf({ ...valid, PICKER_SESSION_IDLE: '30' }), ['PICKER_SESSION_IDLE must be a duration like 30m']);
